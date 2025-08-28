@@ -44,7 +44,20 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # Web directory for custom UI components (optional)
 WEB_DIRECTORY = "./web"
 
+# Import and register server routes
+try:
+    from .server import setup_server
+    # This will be called by ComfyUI to set up the server routes
+    def on_server_start(server):
+        setup_server(server)
+        return True
+except ImportError as e:
+    print(f"⚠️ Server routes not loaded: {e}")
+    on_server_start = None
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+if on_server_start:
+    __all__.append("on_server_start")
 
 print("🎬 Raj Video Processing Nodes loaded successfully!")
 print("   - GPU Support: MPS (Mac), CUDA (NVIDIA), CPU (Fallback)")

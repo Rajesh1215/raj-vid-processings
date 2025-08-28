@@ -153,7 +153,31 @@ class RajVideoSaver:
         logger.info(f"✅ Video saved successfully: {file_path}")
         logger.info(f"   {save_info}")
         
-        return (file_path, save_info, total_frames, duration)
+        # Get video dimensions
+        if isinstance(frames, torch.Tensor):
+            height = frames.shape[1]
+            width = frames.shape[2]
+        else:
+            height = frames.shape[1] if len(frames.shape) > 1 else 720
+            width = frames.shape[2] if len(frames.shape) > 2 else 1280
+        
+        # Prepare UI preview data
+        ui_preview = {
+            "video_preview": [{
+                "path": file_path,
+                "format": format,
+                "fps": fps,
+                "duration": duration,
+                "width": width,
+                "height": height,
+                "frame_count": total_frames
+            }]
+        }
+        
+        return {
+            "ui": ui_preview,
+            "result": (file_path, save_info, total_frames, duration)
+        }
     
     def _save_as_gif(self, frames: torch.Tensor, output_path: str, fps: float, device: torch.device) -> str:
         """Save frames as animated GIF"""

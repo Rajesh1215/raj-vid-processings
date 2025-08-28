@@ -1,5 +1,6 @@
 import { app } from '../../../scripts/app.js'
 import { ComfyWidgets } from '../../../scripts/widgets.js'
+import './raj-video-preview.js' // Import preview widget
 
 // Video file extensions supported by Raj Video Upload
 const SUPPORTED_VIDEO_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'gif'];

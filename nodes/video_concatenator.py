@@ -159,7 +159,55 @@ class RajVideoConcatenator:
         
         logger.info(f"✅ Concatenation complete: {total_frames} frames")
         
-        return (result, info_str, total_frames)
+        # Generate preview file for UI
+        preview_data = None
+        try:
+            import cv2
+            import tempfile
+            import numpy as np
+            
+            # Create temporary preview file
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
+                preview_path = tmp_file.name
+            
+            # Convert frames to numpy for preview
+            frames_cpu = result.cpu().numpy()
+            frames_uint8 = (frames_cpu * 255).astype(np.uint8)
+            
+            # Save preview video using OpenCV
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(preview_path, fourcc, 24.0, (reference_width, reference_height))
+            
+            for frame in frames_uint8:
+                # Convert RGB to BGR for OpenCV
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                out.write(frame_bgr)
+            
+            out.release()
+            
+            # Create preview data
+            preview_data = {
+                "video_preview": [{
+                    "path": preview_path,
+                    "format": "mp4",
+                    "fps": 24.0,
+                    "duration": total_frames / 24.0,
+                    "width": reference_width,
+                    "height": reference_height,
+                    "frame_count": total_frames
+                }]
+            }
+            logger.info(f"📸 Preview saved: {preview_path}")
+        except Exception as e:
+            logger.warning(f"Failed to create preview: {e}")
+        
+        if preview_data:
+            return {
+                "ui": preview_data,
+                "result": (result, info_str, total_frames)
+            }
+        else:
+            return (result, info_str, total_frames)
     
     def _concatenate_with_transitions(self, videos: List[torch.Tensor], 
                                     transition_frames: int, device: torch.device) -> torch.Tensor:

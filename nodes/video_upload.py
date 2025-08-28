@@ -156,7 +156,23 @@ class RajVideoUpload:
             
             logger.info(f"✅ Upload processed: {info_str}")
             
-            return (frames_comfy, info_str, video_info['total_frames'], video_info['fps'])
+            # Prepare UI preview data
+            ui_preview = {
+                "video_preview": [{
+                    "path": video_path,
+                    "format": os.path.splitext(video_path)[1][1:] or "mp4",
+                    "fps": video_info['fps'],
+                    "duration": video_info['total_frames'] / video_info['fps'] if video_info['fps'] > 0 else 0,
+                    "width": video_info['width'],
+                    "height": video_info['height'],
+                    "frame_count": video_info['total_frames']
+                }]
+            }
+            
+            return {
+                "ui": ui_preview,
+                "result": (frames_comfy, info_str, video_info['total_frames'], video_info['fps'])
+            }
             
         except Exception as e:
             raise RuntimeError(f"Failed to process uploaded video: {str(e)}")
