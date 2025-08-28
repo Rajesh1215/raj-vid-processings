@@ -1,0 +1,12 @@
+# Core dependencies for Raj Video Processing Nodes
+torch>=1.13.0
+torchvision>=0.14.0
+opencv-python>=4.5.0
+numpy>=1.21.0
+pillow>=9.0.0
+
+# Optional GPU acceleration libraries
+# Note: These will be automatically detected at runtime
+# For NVIDIA CUDA: torch with cuda support
+# For Mac MPS: torch with MPS support (included in recent PyTorch)
+# For CPU: Basic torch installation (fallback)
