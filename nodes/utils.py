@@ -225,3 +225,198 @@ def should_use_cpu_fallback(device: torch.device, estimated_memory: int, safety_
         return True
     
     return False
+
+# ============================================================================
+# File naming utilities
+# ============================================================================
+
+def get_save_path_incremental(filename: str, directory: str, extension: str) -> str:
+    """
+    Get a save path with auto-increment if file exists.
+    Similar to VideoHelperSuite behavior: filename_00001.ext, filename_00002.ext, etc.
+    
+    Args:
+        filename: Base filename without extension
+        directory: Directory to save in
+        extension: File extension (without dot)
+    
+    Returns:
+        Full path with incremented filename if needed
+    """
+    import os
+    import re
+    
+    # Clean the filename
+    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+    
+    # Build base path
+    base_path = os.path.join(directory, f"{filename}.{extension}")
+    
+    # If doesn't exist, return as is
+    if not os.path.exists(base_path):
+        return base_path
+    
+    # Find the next available number
+    counter = 1
+    while True:
+        numbered_filename = f"{filename}_{counter:05d}"
+        numbered_path = os.path.join(directory, f"{numbered_filename}.{extension}")
+        
+        if not os.path.exists(numbered_path):
+            return numbered_path
+        
+        counter += 1
+        
+        # Safety check to prevent infinite loop
+        if counter > 99999:
+            raise RuntimeError(f"Could not find available filename after 99999 attempts")
+
+# ============================================================================
+# Time and frame utilities
+# ============================================================================
+
+def time_to_frame(time_seconds: float, fps: float = 24.0) -> int:
+    """Convert time in seconds to frame number at given FPS"""
+    return int(time_seconds * fps)
+
+def frame_to_time(frame_num: int, fps: float = 24.0) -> float:
+    """Convert frame number to time in seconds at given FPS"""
+    return frame_num / fps
+
+def parse_time_points(time_string: str, fps: float = 24.0) -> List[int]:
+    """
+    Parse comma-separated time points and convert to frame indices
+    Example: "2.5, 5.0, 8.5" -> [60, 120, 204] at 24fps
+    """
+    if not time_string or time_string.strip() == "":
+        return []
+    
+    times = [float(t.strip()) for t in time_string.split(",")]
+    frames = [time_to_frame(t, fps) for t in times]
+    return frames
+
+# ============================================================================
+# Easing functions for animations
+# ============================================================================
+
+def linear(t: float) -> float:
+    """Linear interpolation (no easing)"""
+    return t
+
+def ease_in_quad(t: float) -> float:
+    """Quadratic ease-in (slow start)"""
+    return t * t
+
+def ease_out_quad(t: float) -> float:
+    """Quadratic ease-out (slow end)"""
+    return 1 - (1 - t) ** 2
+
+def ease_in_out_quad(t: float) -> float:
+    """Quadratic ease-in-out (slow start and end)"""
+    if t < 0.5:
+        return 2 * t * t
+    return 1 - pow(-2 * t + 2, 2) / 2
+
+def ease_out_in_quad(t: float) -> float:
+    """Quadratic ease-out-in (fast middle)"""
+    if t < 0.5:
+        return ease_out_quad(t * 2) * 0.5
+    return ease_in_quad((t - 0.5) * 2) * 0.5 + 0.5
+
+def apply_easing(value: float, start: float, end: float, t: float, easing: str = "linear") -> float:
+    """
+    Apply easing function to interpolate between start and end values
+    
+    Args:
+        value: Current value (unused, kept for compatibility)
+        start: Start value
+        end: End value
+        t: Normalized time (0.0 to 1.0)
+        easing: Easing function name
+    
+    Returns:
+        Interpolated value with easing applied
+    """
+    easing_functions = {
+        "linear": linear,
+        "ease_in": ease_in_quad,
+        "ease_out": ease_out_quad,
+        "ease_in_out": ease_in_out_quad,
+        "ease_out_in": ease_out_in_quad,
+        "constant": lambda x: 0 if x < 1.0 else 1
+    }
+    
+    ease_func = easing_functions.get(easing, linear)
+    eased_t = ease_func(t)
+    return start + (end - start) * eased_t
+
+# ============================================================================
+# Aspect ratio utilities
+# ============================================================================
+
+def calculate_aspect_ratio(width: int, height: int) -> Tuple[int, int]:
+    """Calculate simplified aspect ratio"""
+    import math
+    gcd = math.gcd(width, height)
+    return width // gcd, height // gcd
+
+def resize_with_padding(frame: np.ndarray, target_width: int, target_height: int, 
+                       pad_color: Tuple[int, int, int] = (0, 0, 0)) -> np.ndarray:
+    """
+    Resize frame maintaining aspect ratio and add padding if needed
+    """
+    h, w = frame.shape[:2]
+    aspect = w / h
+    target_aspect = target_width / target_height
+    
+    if aspect > target_aspect:
+        # Frame is wider - fit to width
+        new_width = target_width
+        new_height = int(target_width / aspect)
+    else:
+        # Frame is taller - fit to height
+        new_height = target_height
+        new_width = int(target_height * aspect)
+    
+    # Resize
+    resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+    
+    # Create padded frame
+    padded = np.full((target_height, target_width, 3), pad_color, dtype=frame.dtype)
+    
+    # Calculate padding
+    y_offset = (target_height - new_height) // 2
+    x_offset = (target_width - new_width) // 2
+    
+    # Place resized frame in center
+    padded[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized
+    
+    return padded
+
+def resize_with_crop(frame: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
+    """
+    Resize frame maintaining aspect ratio and crop if needed (center crop)
+    """
+    h, w = frame.shape[:2]
+    aspect = w / h
+    target_aspect = target_width / target_height
+    
+    if aspect > target_aspect:
+        # Frame is wider - fit to height and crop width
+        new_height = target_height
+        new_width = int(target_height * aspect)
+    else:
+        # Frame is taller - fit to width and crop height
+        new_width = target_width
+        new_height = int(target_width / aspect)
+    
+    # Resize
+    resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+    
+    # Center crop
+    y_start = (new_height - target_height) // 2
+    x_start = (new_width - target_width) // 2
+    
+    cropped = resized[y_start:y_start+target_height, x_start:x_start+target_width]
+    
+    return cropped

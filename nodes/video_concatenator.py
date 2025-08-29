@@ -1,9 +1,11 @@
 import torch
 import numpy as np
+import cv2
+import os
 from typing import List, Tuple
 from .utils import (get_optimal_device, tensor_to_video_frames, optimize_batch_size, 
                    get_memory_info, logger, clear_gpu_cache, estimate_tensor_memory,
-                   should_use_cpu_fallback)
+                   should_use_cpu_fallback, calculate_aspect_ratio, resize_with_padding, resize_with_crop)
 
 class RajVideoConcatenator:
     """
@@ -44,6 +46,10 @@ class RajVideoConcatenator:
                     "step": 8,
                     "tooltip": "Chunk size for memory optimization (lower = less memory)"
                 }),
+                "aspect_ratio_handling": (["resize", "pad", "crop", "stretch"], {
+                    "default": "pad",
+                    "tooltip": "How to handle different aspect ratios: resize (stretch to fit), pad (add black bars), crop (center crop), stretch (force fit)"
+                }),
             }
         }
     
@@ -53,7 +59,7 @@ class RajVideoConcatenator:
     CATEGORY = "Raj Video Processing 🎬"
     
     def concatenate_videos(self, video1, video2, video3=None, video4=None, video5=None,
-                          transition_frames=0, force_device="auto", batch_processing=True, chunk_size=32):
+                          transition_frames=0, force_device="auto", batch_processing=True, chunk_size=32, aspect_ratio_handling="pad"):
         
         # Determine initial device
         if force_device == "auto":
@@ -66,6 +72,57 @@ class RajVideoConcatenator:
         for video in [video3, video4, video5]:
             if video is not None:
                 videos.append(video)
+        
+        # Check aspect ratios and handle mismatches
+        reference_height = videos[0].shape[1]
+        reference_width = videos[0].shape[2]
+        reference_aspect = calculate_aspect_ratio(reference_width, reference_height)
+        
+        aspect_mismatch_found = False
+        for i, video in enumerate(videos):
+            current_height = video.shape[1]
+            current_width = video.shape[2]
+            current_aspect = calculate_aspect_ratio(current_width, current_height)
+            
+            if current_aspect != reference_aspect:
+                aspect_mismatch_found = True
+                logger.warning(f"⚠️ Aspect ratio mismatch: Video {i+1} has {current_width}x{current_height} "
+                             f"(aspect {current_aspect[0]}:{current_aspect[1]}) vs reference "
+                             f"{reference_width}x{reference_height} (aspect {reference_aspect[0]}:{reference_aspect[1]})")
+        
+        if aspect_mismatch_found:
+            logger.info(f"🔄 Applying aspect ratio handling: {aspect_ratio_handling}")
+            
+            # Convert videos to handle aspect ratios
+            processed_videos = []
+            for i, video in enumerate(videos):
+                if video.shape[1] != reference_height or video.shape[2] != reference_width:
+                    # Convert tensor to numpy for processing
+                    video_np = video.cpu().numpy()
+                    processed_frames = []
+                    
+                    for frame in video_np:
+                        if aspect_ratio_handling == "pad":
+                            processed_frame = resize_with_padding(frame, reference_width, reference_height)
+                        elif aspect_ratio_handling == "crop":
+                            processed_frame = resize_with_crop(frame, reference_width, reference_height)
+                        elif aspect_ratio_handling == "stretch":
+                            processed_frame = cv2.resize(frame, (reference_width, reference_height), 
+                                                       interpolation=cv2.INTER_LANCZOS4)
+                        else:  # resize (maintain aspect, no padding)
+                            processed_frame = cv2.resize(frame, (reference_width, reference_height), 
+                                                       interpolation=cv2.INTER_LANCZOS4)
+                        
+                        processed_frames.append(processed_frame)
+                    
+                    # Convert back to tensor
+                    processed_video = torch.tensor(np.stack(processed_frames), dtype=torch.float32)
+                    processed_videos.append(processed_video)
+                    logger.info(f"   Video {i+1}: {video.shape[1]}x{video.shape[2]} → {processed_video.shape[1]}x{processed_video.shape[2]}")
+                else:
+                    processed_videos.append(video)
+            
+            videos = processed_videos
         
         # Calculate total memory requirement
         total_frames = sum(v.shape[0] for v in videos)
@@ -185,16 +242,13 @@ class RajVideoConcatenator:
             
             out.release()
             
-            # Create preview data
+            # Create preview data (VHS-compatible format)
             preview_data = {
-                "video_preview": [{
-                    "path": preview_path,
-                    "format": "mp4",
-                    "fps": 24.0,
-                    "duration": total_frames / 24.0,
-                    "width": reference_width,
-                    "height": reference_height,
-                    "frame_count": total_frames
+                "gifs": [{
+                    "filename": os.path.basename(preview_path),
+                    "subfolder": "",
+                    "type": "temp",
+                    "format": "video/mp4"
                 }]
             }
             logger.info(f"📸 Preview saved: {preview_path}")

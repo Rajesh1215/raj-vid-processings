@@ -5,7 +5,7 @@ import numpy as np
 import subprocess
 import tempfile
 from typing import Tuple, Optional, List
-from .utils import get_optimal_device, logger
+from .utils import get_optimal_device, logger, get_save_path_incremental
 
 try:
     import folder_paths
@@ -39,7 +39,7 @@ class RajVideoSaver:
                     "tooltip": "Output filename (without extension)"
                 }),
                 "fps": ("FLOAT", {
-                    "default": 30.0, 
+                    "default": 24.0, 
                     "min": 1.0, 
                     "max": 120.0, 
                     "step": 0.1,
@@ -122,8 +122,8 @@ class RajVideoSaver:
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # Full output path
-        output_path = os.path.join(output_dir, f"{filename}.{format}")
+        # Get auto-increment filename if file exists
+        output_path = get_save_path_incremental(filename, output_dir, format)
         
         logger.info(f"💾 Saving video: {output_path}")
         logger.info(f"   Device: {device} | Frames: {frames.shape[0]} | FPS: {fps}")
@@ -161,21 +161,16 @@ class RajVideoSaver:
             height = frames.shape[1] if len(frames.shape) > 1 else 720
             width = frames.shape[2] if len(frames.shape) > 2 else 1280
         
-        # Prepare UI preview data
-        ui_preview = {
-            "video_preview": [{
-                "path": file_path,
-                "format": format,
-                "fps": fps,
-                "duration": duration,
-                "width": width,
-                "height": height,
-                "frame_count": total_frames
-            }]
+        # Prepare UI preview data (VHS-compatible format)
+        preview = {
+            "filename": os.path.basename(file_path),
+            "subfolder": "",
+            "type": "output" if save_to_output else "temp",
+            "format": f"video/{format}" if format != "gif" else "image/gif"
         }
         
         return {
-            "ui": ui_preview,
+            "ui": {"gifs": [preview]},
             "result": (file_path, save_info, total_frames, duration)
         }
     
@@ -352,7 +347,7 @@ class RajVideoSaverAdvanced:
                     "default": "advanced_output", 
                     "multiline": False
                 }),
-                "fps": ("FLOAT", {"default": 30.0, "min": 1.0, "max": 120.0}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0}),
                 "width": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8}),
                 "height": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 8}),
             },

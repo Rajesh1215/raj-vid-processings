@@ -156,21 +156,17 @@ class RajVideoUpload:
             
             logger.info(f"✅ Upload processed: {info_str}")
             
-            # Prepare UI preview data
-            ui_preview = {
-                "video_preview": [{
-                    "path": video_path,
-                    "format": os.path.splitext(video_path)[1][1:] or "mp4",
-                    "fps": video_info['fps'],
-                    "duration": video_info['total_frames'] / video_info['fps'] if video_info['fps'] > 0 else 0,
-                    "width": video_info['width'],
-                    "height": video_info['height'],
-                    "frame_count": video_info['total_frames']
-                }]
+            # Prepare UI preview data (VHS-compatible format)
+            video_format = os.path.splitext(video_path)[1][1:] or "mp4"
+            preview = {
+                "filename": os.path.basename(video_path),
+                "subfolder": "",
+                "type": "input",
+                "format": f"video/{video_format}"
             }
             
             return {
-                "ui": ui_preview,
+                "ui": {"gifs": [preview]},
                 "result": (frames_comfy, info_str, video_info['total_frames'], video_info['fps'])
             }
             
