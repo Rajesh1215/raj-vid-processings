@@ -13,9 +13,6 @@ try:
     from .nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     from .nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from .nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
-    from .nodes.video_trimmer import RajVideoTrimmer, RajVideoCutter, RajVideoTimecodeConverter
-    from .nodes.video_multi_cutter import RajVideoMultiCutter, RajVideoSegmentManager
-    from .nodes.video_mask_composite import RajVideoMaskComposite
 except ImportError:
     # Fallback for direct testing
     from nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
@@ -25,9 +22,6 @@ except ImportError:
     from nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     from nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
-    from nodes.video_trimmer import RajVideoTrimmer, RajVideoCutter, RajVideoTimecodeConverter
-    from nodes.video_multi_cutter import RajVideoMultiCutter, RajVideoSegmentManager
-    from nodes.video_mask_composite import RajVideoMaskComposite
 
 # Node class mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -45,12 +39,6 @@ NODE_CLASS_MAPPINGS = {
     "RajVideoSharpness": RajVideoSharpness,
     "RajVideoTransitions": RajVideoTransitions,
     "RajTransitionLibrary": RajTransitionLibrary,
-    "RajVideoTrimmer": RajVideoTrimmer,
-    "RajVideoCutter": RajVideoCutter,
-    "RajVideoTimecodeConverter": RajVideoTimecodeConverter,
-    "RajVideoMultiCutter": RajVideoMultiCutter,
-    "RajVideoSegmentManager": RajVideoSegmentManager,
-    "RajVideoMaskComposite": RajVideoMaskComposite,
 }
 
 # Display names in ComfyUI interface
@@ -69,12 +57,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajVideoSharpness": "✨ Raj Video Sharpness",
     "RajVideoTransitions": "🎭 Raj Video Transitions",
     "RajTransitionLibrary": "🔄 Raj Transition Library",
-    "RajVideoTrimmer": "✂️ Raj Video Trimmer",
-    "RajVideoCutter": "🔪 Raj Video Cutter",
-    "RajVideoTimecodeConverter": "🕐 Raj Timecode Converter",
-    "RajVideoMultiCutter": "✂️ Raj Multi-Cutter",
-    "RajVideoSegmentManager": "📊 Raj Segment Manager",
-    "RajVideoMaskComposite": "🎭 Raj Mask Composite",
 }
 
 # Web directory for custom UI components (optional)
@@ -98,17 +80,13 @@ if on_server_start:
 print("🎬 Raj Video Processing Nodes loaded successfully!")
 print("   - GPU Support: MPS (Mac), CUDA (NVIDIA), CPU (Fallback)")
 print("   - Core Nodes: Video Loader, Concatenator, Sequencer, Video Saver, Video Upload")
-print("   - Preview Nodes: Video Preview (temp), Video Preview Advanced")
 print("   - Effects: Time-based Brightness, Contrast, Blur, Saturation with Easing")
 print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
 print("   - NEW: Video Trimmer, Video Cutter, Multi-Cutter, Mask Composite")
 print("   - Video Formats: MP4, MOV, AVI, WebM, GIF")
 print("   - Upload Support: Drag & Drop, Upload Button")
-print("   - Trimming: Time-based (seconds) or Timecode (HH:MM:SS:FF)")
-print("   - Cutting: Dual outputs (remaining + removed segments)")
-print("   - Multi-Cutting: Multiple cut points with segment management")
-print("   - Masking: Chroma key, Color range, Brightness, Custom HSV")
-print("   - Compositing: Advanced blending modes (Normal, Multiply, Screen, Overlay)")
+print("   - Effects: Time-based Brightness, Contrast, Blur with Easing")
+print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
 print("   - Aspect Ratio: Resize, Pad, Crop, Stretch handling")
 print("   - Auto-increment filenames (VideoHelperSuite style)")
 print("   - Video Preview Widget: Working in Web UI for Save & Preview nodes")
