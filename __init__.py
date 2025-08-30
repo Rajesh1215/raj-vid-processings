@@ -10,18 +10,18 @@ try:
     from .nodes.video_concatenator import RajVideoConcatenator, RajVideoSequencer
     from .nodes.video_saver import RajVideoSaver, RajVideoSaverAdvanced
     from .nodes.video_upload import RajVideoUpload, RajVideoUploadAdvanced
-    from .nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     from .nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from .nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
+    from .nodes.video_segmenter import RajVideoSegmenter
 except ImportError:
     # Fallback for direct testing
     from nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
     from nodes.video_concatenator import RajVideoConcatenator, RajVideoSequencer
     from nodes.video_saver import RajVideoSaver, RajVideoSaverAdvanced
     from nodes.video_upload import RajVideoUpload, RajVideoUploadAdvanced
-    from nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     from nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
+    from nodes.video_segmenter import RajVideoSegmenter
 
 # Node class mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -33,12 +33,11 @@ NODE_CLASS_MAPPINGS = {
     "RajVideoSaverAdvanced": RajVideoSaverAdvanced,
     "RajVideoUpload": RajVideoUpload,
     "RajVideoUploadAdvanced": RajVideoUploadAdvanced,
-    "RajVideoPreview": RajVideoPreview,
-    "RajVideoPreviewAdvanced": RajVideoPreviewAdvanced,
     "RajVideoEffects": RajVideoEffects,
     "RajVideoSharpness": RajVideoSharpness,
     "RajVideoTransitions": RajVideoTransitions,
     "RajTransitionLibrary": RajTransitionLibrary,
+    "RajVideoSegmenter": RajVideoSegmenter,
 }
 
 # Display names in ComfyUI interface
@@ -51,12 +50,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajVideoSaverAdvanced": "🎛️ Raj Video Saver (Advanced)",
     "RajVideoUpload": "📤 Raj Video Upload",
     "RajVideoUploadAdvanced": "🎚️ Raj Video Upload (Advanced)",
-    "RajVideoPreview": "👁️ Raj Video Preview",
-    "RajVideoPreviewAdvanced": "🎭 Raj Video Preview (Advanced)",
     "RajVideoEffects": "🎨 Raj Video Effects",
     "RajVideoSharpness": "✨ Raj Video Sharpness",
     "RajVideoTransitions": "🎭 Raj Video Transitions",
     "RajTransitionLibrary": "🔄 Raj Transition Library",
+    "RajVideoSegmenter": "✂️ Raj Video Segmenter",
 }
 
 # Web directory for custom UI components (optional)
@@ -82,12 +80,9 @@ print("   - GPU Support: MPS (Mac), CUDA (NVIDIA), CPU (Fallback)")
 print("   - Core Nodes: Video Loader, Concatenator, Sequencer, Video Saver, Video Upload")
 print("   - Effects: Time-based Brightness, Contrast, Blur, Saturation with Easing")
 print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
-print("   - NEW: Video Trimmer, Video Cutter, Multi-Cutter, Mask Composite")
+print("   - NEW: Video Segmenter - Split videos by time with dual outputs")
 print("   - Video Formats: MP4, MOV, AVI, WebM, GIF")
 print("   - Upload Support: Drag & Drop, Upload Button")
-print("   - Effects: Time-based Brightness, Contrast, Blur with Easing")
-print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
 print("   - Aspect Ratio: Resize, Pad, Crop, Stretch handling")
 print("   - Auto-increment filenames (VideoHelperSuite style)")
-print("   - Video Preview Widget: Working in Web UI for Save & Preview nodes")
 print("   - Cross-platform compatibility: Mac, Linux, Windows")
