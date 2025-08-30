@@ -13,6 +13,7 @@ try:
     from .nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from .nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
     from .nodes.video_segmenter import RajVideoSegmenter
+    from .nodes.video_mask_composite import RajVideoMaskComposite
 except ImportError:
     # Fallback for direct testing
     from nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
@@ -22,6 +23,7 @@ except ImportError:
     from nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
     from nodes.video_segmenter import RajVideoSegmenter
+    from nodes.video_mask_composite import RajVideoMaskComposite
 
 # Node class mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -38,6 +40,7 @@ NODE_CLASS_MAPPINGS = {
     "RajVideoTransitions": RajVideoTransitions,
     "RajTransitionLibrary": RajTransitionLibrary,
     "RajVideoSegmenter": RajVideoSegmenter,
+    "RajVideoMaskComposite": RajVideoMaskComposite,
 }
 
 # Display names in ComfyUI interface
@@ -55,6 +58,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajVideoTransitions": "🎭 Raj Video Transitions",
     "RajTransitionLibrary": "🔄 Raj Transition Library",
     "RajVideoSegmenter": "✂️ Raj Video Segmenter",
+    "RajVideoMaskComposite": "🎭 Raj Video Mask Composite",
 }
 
 # Web directory for custom UI components (optional)
@@ -81,6 +85,7 @@ print("   - Core Nodes: Video Loader, Concatenator, Sequencer, Video Saver, Vide
 print("   - Effects: Time-based Brightness, Contrast, Blur, Saturation with Easing")
 print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
 print("   - NEW: Video Segmenter - Split videos by time with dual outputs")
+print("   - NEW: Mask Composite - Color-based video compositing with thresholding")
 print("   - Video Formats: MP4, MOV, AVI, WebM, GIF")
 print("   - Upload Support: Drag & Drop, Upload Button")
 print("   - Aspect Ratio: Resize, Pad, Crop, Stretch handling")
