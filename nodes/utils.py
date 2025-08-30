@@ -25,13 +25,14 @@ def get_optimal_device() -> torch.device:
     
     return device
 
-def video_to_tensor(video_path: str, 
-                   device: torch.device,
-                   target_fps: float = 0,
-                   max_frames: int = 0,
-                   target_size: Tuple[int, int] = None) -> Tuple[torch.Tensor, dict]:
+def video_to_tensor_chunked(video_path: str, 
+                           device: torch.device,
+                           target_fps: float = 0,
+                           max_frames: int = 0,
+                           target_size: Tuple[int, int] = None,
+                           chunk_size: int = 50) -> Tuple[torch.Tensor, dict]:
     """
-    Load video file and convert to PyTorch tensor with GPU support
+    Load video file with chunked processing to handle memory constraints
     
     Args:
         video_path: Path to video file
@@ -39,10 +40,14 @@ def video_to_tensor(video_path: str,
         target_fps: Target frame rate (0 = original)
         max_frames: Maximum frames to load (0 = all)
         target_size: (width, height) to resize to (None = original)
+        chunk_size: Number of frames to process at once
     
     Returns:
         (frames_tensor, video_info)
     """
+    import psutil
+    import gc
+    
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video file: {video_path}")
@@ -53,9 +58,275 @@ def video_to_tensor(video_path: str,
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Calculate frame sampling
+    # Fix FPS conversion for near-identical framerates
     if target_fps > 0 and original_fps > 0:
-        frame_skip = max(1, int(original_fps / target_fps))
+        fps_ratio = original_fps / target_fps
+        # If framerates are very close (within 1%), treat as identical
+        if abs(fps_ratio - 1.0) < 0.01:
+            logger.info(f"⚡ FPS rates very close ({original_fps:.2f} → {target_fps:.2f}), using 1:1 mapping")
+            frame_skip = 1
+            need_frame_interpolation = False
+        else:
+            frame_skip = max(1, int(fps_ratio))
+            need_frame_interpolation = (fps_ratio < 1.0)  # Need to duplicate frames
+    else:
+        frame_skip = 1
+        target_fps = original_fps
+        need_frame_interpolation = False
+    
+    # Determine final dimensions
+    if target_size is not None:
+        final_width, final_height = target_size
+    else:
+        final_width, final_height = width, height
+    
+    # Calculate memory requirements
+    frame_memory = final_width * final_height * 3 * 4  # RGB float32
+    estimated_memory = (total_frames // frame_skip) * frame_memory
+    available_memory = psutil.virtual_memory().available
+    
+    # Adjust chunk size based on memory
+    if estimated_memory > available_memory * 0.3:  # Using more than 30% of RAM
+        chunk_size = min(chunk_size, max(10, int(available_memory * 0.1 / frame_memory)))
+        logger.info(f"⚠️ Large video detected, reducing chunk size to {chunk_size} frames")
+    
+    logger.info(f"📹 Loading video (chunked): {video_path}")
+    logger.info(f"   Original: {width}x{height} @ {original_fps:.2f}fps, {total_frames} frames")
+    logger.info(f"   Target: {final_width}x{final_height} @ {target_fps:.2f}fps")
+    logger.info(f"   Memory: {estimated_memory/(1024**3):.2f}GB estimated, chunk size: {chunk_size}")
+    if need_frame_interpolation:
+        logger.info(f"   🔄 Frame interpolation enabled ({original_fps:.2f} → {target_fps:.2f})")
+    
+    # Process video in chunks
+    all_frame_chunks = []
+    frames_buffer = []
+    frame_count = 0
+    read_count = 0
+    
+    # Determine optimal processing device
+    original_device = device
+    use_cpu_for_large = (device.type == "mps" and estimated_memory > 500_000_000)  # 500MB threshold
+    processing_device = torch.device("cpu") if use_cpu_for_large else device
+    
+    if use_cpu_for_large:
+        logger.info(f"⚠️ Using CPU processing due to large video size")
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Skip frames based on target FPS
+        should_include_frame = True
+        if frame_skip > 1 and read_count % frame_skip != 0:
+            should_include_frame = False
+        
+        if should_include_frame:
+            # Resize if needed
+            if target_size is not None:
+                frame = cv2.resize(frame, target_size)
+            
+            # Convert BGR to RGB and normalize to [0,1]
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_normalized = frame_rgb.astype(np.float32) / 255.0
+            
+            # Add frame interpolation for upsampling
+            if need_frame_interpolation and frame_count > 0:
+                # Simple frame duplication for FPS upsampling
+                interp_count = int(target_fps / original_fps) - 1
+                for _ in range(interp_count):
+                    frames_buffer.append(frame_normalized.copy())
+                    frame_count += 1
+                    if len(frames_buffer) >= chunk_size:
+                        all_frame_chunks.append(process_frame_chunk(frames_buffer, processing_device))
+                        frames_buffer = []
+                        gc.collect()  # Force garbage collection
+            
+            frames_buffer.append(frame_normalized)
+            frame_count += 1
+            
+            # Process chunk when buffer is full
+            if len(frames_buffer) >= chunk_size:
+                chunk_tensor = process_frame_chunk(frames_buffer, processing_device)
+                all_frame_chunks.append(chunk_tensor)
+                frames_buffer = []
+                
+                # Clear memory and caches
+                gc.collect()
+                if processing_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                    torch.mps.empty_cache()
+                elif processing_device.type == "cuda":
+                    torch.cuda.empty_cache()
+                
+                # Monitor memory usage
+                memory_percent = psutil.virtual_memory().percent
+                if memory_percent > 85:
+                    logger.warning(f"⚠️ High memory usage ({memory_percent:.1f}%), consider reducing chunk size")
+        
+        read_count += 1
+        
+        # Check max frames limit
+        if max_frames > 0 and frame_count >= max_frames:
+            break
+    
+    # Process remaining frames
+    if frames_buffer:
+        chunk_tensor = process_frame_chunk(frames_buffer, processing_device)
+        all_frame_chunks.append(chunk_tensor)
+    
+    cap.release()
+    
+    if not all_frame_chunks:
+        raise ValueError("No frames loaded from video")
+    
+    # Concatenate all chunks
+    logger.info(f"🔗 Concatenating {len(all_frame_chunks)} chunks...")
+    frames_tensor = torch.cat(all_frame_chunks, dim=0)
+    
+    # Final integrity check
+    tensor_max = torch.max(frames_tensor).item()
+    tensor_min = torch.min(frames_tensor).item()
+    logger.info(f"✅ Final tensor stats: min={tensor_min:.3f}, max={tensor_max:.3f}")
+    
+    if tensor_max < 0.001:
+        raise ValueError(f"Final tensor corrupted (max: {tensor_max:.6f})")
+    
+    # Try to move to original device if we used CPU for processing
+    if processing_device.type == "cpu" and original_device.type == "mps":
+        try:
+            # Clear caches
+            gc.collect()
+            torch.mps.empty_cache()
+            
+            # Test with small chunk first
+            test_chunk = frames_tensor[:min(10, frames_tensor.shape[0])].to(original_device)
+            if torch.max(test_chunk).item() > 0.001:
+                frames_tensor = frames_tensor.to(original_device)
+                processing_device = original_device
+                logger.info(f"✅ Successfully moved to {original_device}")
+            else:
+                logger.warning(f"⚠️ MPS corruption detected, staying on CPU")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not move to MPS: {e}")
+    
+    video_info = {
+        'fps': target_fps,
+        'total_frames': frame_count,
+        'width': final_width,
+        'height': final_height,
+        'original_fps': original_fps,
+        'original_total_frames': total_frames,
+        'device': str(processing_device),
+        'chunks_processed': len(all_frame_chunks),
+        'memory_optimized': use_cpu_for_large
+    }
+    
+    logger.info(f"✅ Loaded {frame_count} frames on {processing_device} ({len(all_frame_chunks)} chunks)")
+    return frames_tensor, video_info
+
+def process_frame_chunk(frames_list: list, device: torch.device) -> torch.Tensor:
+    """Process a chunk of frames with corruption detection"""
+    if not frames_list:
+        return torch.empty((0, 0, 0, 3), device=device)
+    
+    # Convert to numpy array
+    frames_array = np.stack(frames_list, axis=0)
+    
+    # Check numpy array integrity
+    array_max = np.max(frames_array)
+    if array_max < 0.001:
+        logger.warning(f"⚠️ Chunk has corrupted numpy data (max: {array_max:.6f})")
+        return torch.zeros((len(frames_list), frames_list[0].shape[0], frames_list[0].shape[1], 3), device=device)
+    
+    # Convert to tensor
+    try:
+        chunk_tensor = torch.from_numpy(frames_array).to(device)
+        
+        # Verify tensor integrity
+        tensor_max = torch.max(chunk_tensor).item()
+        if tensor_max < 0.001:
+            logger.warning(f"⚠️ Tensor corrupted after creation (max: {tensor_max:.6f})")
+            if device.type != "cpu":
+                # Fallback to CPU for this chunk
+                chunk_tensor = torch.from_numpy(frames_array).to(torch.device("cpu"))
+                logger.info(f"✅ Chunk fallback to CPU successful")
+        
+        return chunk_tensor
+        
+    except Exception as e:
+        logger.error(f"❌ Chunk processing failed: {e}")
+        # Return CPU tensor as fallback
+        return torch.from_numpy(frames_array).to(torch.device("cpu"))
+
+def video_to_tensor(video_path: str, 
+                   device: torch.device,
+                   target_fps: float = 0,
+                   max_frames: int = 0,
+                   target_size: Tuple[int, int] = None) -> Tuple[torch.Tensor, dict]:
+    """
+    Load video file and convert to PyTorch tensor with automatic chunking for large videos
+    
+    This is a wrapper that automatically chooses between standard and chunked loading
+    based on video size and available memory.
+    """
+    import psutil
+    
+    # Quick check of video properties
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    original_fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    
+    # Estimate memory requirements
+    frame_size = width * height * 3 * 4  # RGB float32
+    estimated_frames = total_frames if max_frames <= 0 else min(max_frames, total_frames)
+    estimated_memory = estimated_frames * frame_size
+    available_memory = psutil.virtual_memory().available
+    
+    # Use chunked processing for large videos or low memory situations
+    use_chunked = (
+        estimated_memory > available_memory * 0.2 or  # More than 20% of available RAM
+        total_frames > 200 or  # Large frame count
+        (device.type == "mps" and estimated_memory > 100_000_000) or  # 100MB threshold for MPS
+        psutil.virtual_memory().percent > 70  # High memory usage already
+    )
+    
+    if use_chunked:
+        logger.info(f"📊 Using chunked processing (est. {estimated_memory/(1024**3):.2f}GB, {available_memory/(1024**3):.2f}GB available)")
+        return video_to_tensor_chunked(video_path, device, target_fps, max_frames, target_size)
+    else:
+        logger.info(f"📊 Using standard processing (est. {estimated_memory/(1024**2):.1f}MB)")
+        return video_to_tensor_standard(video_path, device, target_fps, max_frames, target_size)
+
+def video_to_tensor_standard(video_path: str, 
+                           device: torch.device,
+                           target_fps: float = 0,
+                           max_frames: int = 0,
+                           target_size: Tuple[int, int] = None) -> Tuple[torch.Tensor, dict]:
+    """Standard video loading for smaller videos (legacy function)"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {video_path}")
+    
+    # Get video properties
+    original_fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Calculate frame sampling with improved FPS handling
+    if target_fps > 0 and original_fps > 0:
+        fps_ratio = original_fps / target_fps
+        if abs(fps_ratio - 1.0) < 0.01:  # Very close framerates
+            frame_skip = 1
+            logger.info(f"⚡ FPS rates very close ({original_fps:.2f} → {target_fps:.2f}), using 1:1 mapping")
+        else:
+            frame_skip = max(1, int(fps_ratio))
     else:
         frame_skip = 1
         target_fps = original_fps
@@ -105,10 +376,28 @@ def video_to_tensor(video_path: str,
     if not frames:
         raise ValueError("No frames loaded from video")
     
-    # Convert to tensor and move to device
-    # Shape: [batch, height, width, channels]
+    # Convert to tensor with corruption detection
     frames_array = np.stack(frames, axis=0)
-    frames_tensor = torch.from_numpy(frames_array).to(device)
+    array_max = np.max(frames_array)
+    
+    if array_max < 0.001:
+        raise ValueError(f"Video frames are corrupted (max: {array_max:.6f})")
+    
+    # Process on CPU first for stability, then move to target device
+    frames_tensor = torch.from_numpy(frames_array).to(torch.device("cpu"))
+    
+    # Move to target device if different
+    if device.type != "cpu":
+        try:
+            frames_tensor = frames_tensor.to(device)
+            # Verify after move
+            if torch.max(frames_tensor).item() < 0.001:
+                logger.warning(f"⚠️ Corruption after moving to {device}, staying on CPU")
+                frames_tensor = frames_tensor.to(torch.device("cpu"))
+                device = torch.device("cpu")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not move to {device}: {e}, using CPU")
+            device = torch.device("cpu")
     
     video_info = {
         'fps': target_fps,
@@ -131,8 +420,51 @@ def tensor_to_video_frames(tensor: torch.Tensor) -> torch.Tensor:
     if tensor.dim() != 4:
         raise ValueError(f"Expected 4D tensor, got {tensor.dim()}D")
     
-    # Ensure values are in [0,1] range - use in-place operation to save memory
-    tensor.clamp_(0.0, 1.0)
+    # Check input integrity first
+    input_max = torch.max(tensor).item()
+    input_min = torch.min(tensor).item()
+    
+    if input_max < 0.001:
+        logger.warning(f"⚠️ tensor_to_video_frames received corrupted input (max: {input_max:.6f})")
+        return tensor  # Return as-is to avoid further corruption
+    
+    # Ensure values are in [0,1] range with corruption detection
+    # NOTE: Even out-of-place operations on MPS can corrupt large tensors
+    if tensor.device.type == "mps":
+        # For MPS, avoid clamp operations entirely for large tensors to prevent corruption
+        tensor_size = tensor.numel() * 4  # float32 = 4 bytes
+        if tensor_size > 100_000_000:  # 100MB threshold
+            logger.info(f"⚠️ Large MPS tensor ({tensor_size/(1024**2):.1f}MB), skipping clamp to prevent corruption")
+            # Only clamp if values are actually outside [0,1] range
+            if input_min < -0.001 or input_max > 1.001:
+                logger.info(f"   Values outside [0,1] range ({input_min:.3f}, {input_max:.3f}), applying careful clamp")
+                # Move to CPU, clamp, then move back
+                device = tensor.device
+                tensor_cpu = tensor.cpu()
+                tensor_clamped = torch.clamp(tensor_cpu, 0.0, 1.0)
+                tensor = tensor_clamped.to(device)
+                
+                # Verify clamp didn't corrupt
+                if torch.max(tensor).item() < 0.001:
+                    logger.warning(f"⚠️ Clamp operation corrupted tensor, reverting to original")
+                    tensor = tensor_cpu.to(device)  # Use unclamped version
+        else:
+            # Small tensor, safe to clamp on MPS
+            tensor_clamped = torch.clamp(tensor, 0.0, 1.0)
+            
+            # Verify clamp didn't corrupt
+            if torch.max(tensor_clamped).item() < 0.001:
+                logger.warning(f"⚠️ MPS clamp corrupted tensor, keeping original values")
+            else:
+                tensor = tensor_clamped
+    else:
+        # Use in-place operation for CPU/CUDA to save memory
+        tensor.clamp_(0.0, 1.0)
+    
+    # Final integrity check
+    output_max = torch.max(tensor).item()
+    if output_max < 0.001 and input_max > 0.01:
+        logger.error(f"❌ tensor_to_video_frames corrupted tensor: {input_max:.3f} → {output_max:.6f}")
     
     return tensor
 

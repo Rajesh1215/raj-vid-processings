@@ -10,6 +10,7 @@ try:
     from .nodes.video_concatenator import RajVideoConcatenator, RajVideoSequencer
     from .nodes.video_saver import RajVideoSaver, RajVideoSaverAdvanced
     from .nodes.video_upload import RajVideoUpload, RajVideoUploadAdvanced
+    from .nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     from .nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from .nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
     from .nodes.video_trimmer import RajVideoTrimmer, RajVideoCutter, RajVideoTimecodeConverter
@@ -21,6 +22,7 @@ except ImportError:
     from nodes.video_concatenator import RajVideoConcatenator, RajVideoSequencer
     from nodes.video_saver import RajVideoSaver, RajVideoSaverAdvanced
     from nodes.video_upload import RajVideoUpload, RajVideoUploadAdvanced
+    from nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     from nodes.video_effects import RajVideoEffects, RajVideoSharpness
     from nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
     from nodes.video_trimmer import RajVideoTrimmer, RajVideoCutter, RajVideoTimecodeConverter
@@ -37,6 +39,8 @@ NODE_CLASS_MAPPINGS = {
     "RajVideoSaverAdvanced": RajVideoSaverAdvanced,
     "RajVideoUpload": RajVideoUpload,
     "RajVideoUploadAdvanced": RajVideoUploadAdvanced,
+    "RajVideoPreview": RajVideoPreview,
+    "RajVideoPreviewAdvanced": RajVideoPreviewAdvanced,
     "RajVideoEffects": RajVideoEffects,
     "RajVideoSharpness": RajVideoSharpness,
     "RajVideoTransitions": RajVideoTransitions,
@@ -59,6 +63,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajVideoSaverAdvanced": "🎛️ Raj Video Saver (Advanced)",
     "RajVideoUpload": "📤 Raj Video Upload",
     "RajVideoUploadAdvanced": "🎚️ Raj Video Upload (Advanced)",
+    "RajVideoPreview": "👁️ Raj Video Preview",
+    "RajVideoPreviewAdvanced": "🎭 Raj Video Preview (Advanced)",
     "RajVideoEffects": "🎨 Raj Video Effects",
     "RajVideoSharpness": "✨ Raj Video Sharpness",
     "RajVideoTransitions": "🎭 Raj Video Transitions",
@@ -92,6 +98,7 @@ if on_server_start:
 print("🎬 Raj Video Processing Nodes loaded successfully!")
 print("   - GPU Support: MPS (Mac), CUDA (NVIDIA), CPU (Fallback)")
 print("   - Core Nodes: Video Loader, Concatenator, Sequencer, Video Saver, Video Upload")
+print("   - Preview Nodes: Video Preview (temp), Video Preview Advanced")
 print("   - Effects: Time-based Brightness, Contrast, Blur, Saturation with Easing")
 print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
 print("   - NEW: Video Trimmer, Video Cutter, Multi-Cutter, Mask Composite")
@@ -104,5 +111,5 @@ print("   - Masking: Chroma key, Color range, Brightness, Custom HSV")
 print("   - Compositing: Advanced blending modes (Normal, Multiply, Screen, Overlay)")
 print("   - Aspect Ratio: Resize, Pad, Crop, Stretch handling")
 print("   - Auto-increment filenames (VideoHelperSuite style)")
-print("   - Default 24 FPS, Video Preview in Web UI")
+print("   - Video Preview Widget: Working in Web UI for Save & Preview nodes")
 print("   - Cross-platform compatibility: Mac, Linux, Windows")

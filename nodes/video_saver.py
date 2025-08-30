@@ -161,12 +161,15 @@ class RajVideoSaver:
             height = frames.shape[1] if len(frames.shape) > 1 else 720
             width = frames.shape[2] if len(frames.shape) > 2 else 1280
         
-        # Prepare UI preview data (VHS-compatible format)
+        # Prepare UI preview data (VHS-compatible format for ComfyUI's built-in preview)
         preview = {
             "filename": os.path.basename(file_path),
             "subfolder": "",
             "type": "output" if save_to_output else "temp",
-            "format": f"video/{format}" if format != "gif" else "image/gif"
+            "format": f"video/{format}" if format != "gif" else "image/gif",
+            # Additional metadata for preview widget
+            "frame_rate": fps,
+            "frame_count": total_frames
         }
         
         return {
@@ -451,4 +454,27 @@ class RajVideoSaverAdvanced:
         
         encoding_log = stderr.decode() if stderr else "Encoding completed successfully"
         
-        return (output_path, encoding_log)
+        # Get video info for preview
+        import cv2
+        cap = cv2.VideoCapture(output_path)
+        video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) if cap.isOpened() else width
+        video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) if cap.isOpened() else height
+        video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else len(frames_uint8)
+        cap.release()
+        
+        duration = video_frame_count / fps
+        
+        # Prepare UI preview data (VHS-compatible format for ComfyUI's built-in preview)
+        preview = {
+            "filename": os.path.basename(output_path),
+            "subfolder": "",
+            "type": "output",
+            "format": "video/mp4",
+            "frame_rate": fps,
+            "frame_count": video_frame_count
+        }
+        
+        return {
+            "ui": {"gifs": [preview]},
+            "result": (output_path, encoding_log)
+        }

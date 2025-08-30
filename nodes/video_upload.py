@@ -144,6 +144,31 @@ class RajVideoUpload:
                 target_size
             )
             
+            # Verify tensor integrity before conversion
+            tensor_max = torch.max(frames_tensor).item()
+            tensor_min = torch.min(frames_tensor).item()
+            logger.info(f"📊 Tensor integrity check: min={tensor_min:.6f}, max={tensor_max:.6f}")
+            
+            if tensor_max < 0.001:
+                logger.error(f"❌ Tensor corrupted before ComfyUI conversion (max: {tensor_max:.6f})")
+                logger.info("🔧 Attempting to reload on CPU...")
+                
+                # Force CPU reload as fallback
+                frames_tensor, video_info = video_to_tensor(
+                    video_path, 
+                    torch.device("cpu"), 
+                    target_fps, 
+                    max_frames, 
+                    target_size
+                )
+                
+                # Verify CPU reload worked
+                cpu_max = torch.max(frames_tensor).item()
+                if cpu_max < 0.001:
+                    raise ValueError(f"Video appears to be corrupted or completely black (max value: {cpu_max:.6f})")
+                
+                logger.info(f"✅ CPU reload successful: max={cpu_max:.6f}")
+            
             # Convert to ComfyUI format
             frames_comfy = tensor_to_video_frames(frames_tensor)
             
