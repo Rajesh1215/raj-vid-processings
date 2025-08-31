@@ -30,6 +30,9 @@ try:
     from .nodes.whisper_process import RajWhisperProcess
     from .nodes.audio_loader import RajAudioLoader, RajAudioProcessor
     from .nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
+    # Subtitle System Nodes
+    from .nodes.subtitle_engine import RajSubtitleEngine
+    from .nodes.text_to_timing import RajTextToTiming
 except ImportError:
     # Fallback for direct testing
     from nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
@@ -56,6 +59,9 @@ except ImportError:
     from nodes.whisper_process import RajWhisperProcess
     from nodes.audio_loader import RajAudioLoader, RajAudioProcessor
     from nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
+    # Subtitle System Nodes
+    from nodes.subtitle_engine import RajSubtitleEngine
+    from nodes.text_to_timing import RajTextToTiming
 
 # Node class mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -91,6 +97,9 @@ NODE_CLASS_MAPPINGS = {
     "RajAudioProcessor": RajAudioProcessor,
     "RajAudioPreview": RajAudioPreview,
     "RajAudioAnalyzer": RajAudioAnalyzer,
+    # Subtitle System Nodes
+    "RajSubtitleEngine": RajSubtitleEngine,
+    "RajTextToTiming": RajTextToTiming,
 }
 
 # Display names in ComfyUI interface
@@ -127,6 +136,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajAudioProcessor": "🎚️ Raj Audio Processor",
     "RajAudioPreview": "🎵 Raj Audio Preview",
     "RajAudioAnalyzer": "🔍 Raj Audio Analyzer",
+    # Subtitle System Nodes
+    "RajSubtitleEngine": "🎬 Raj Subtitle Engine",
+    "RajTextToTiming": "⏰ Raj Text to Timing",
 }
 
 # Web directory for custom UI components (optional)

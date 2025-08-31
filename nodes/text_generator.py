@@ -271,8 +271,8 @@ class RajTextGenerator:
             }
         }
     
-    RETURN_TYPES = ("IMAGE", "MASK", "TEXT_CONFIG", "STRING")
-    RETURN_NAMES = ("text_image", "alpha_mask", "text_settings", "render_info")
+    RETURN_TYPES = ("IMAGE", "MASK", "TEXT_CONFIG", "STRING", "TEXT_SETTINGS")
+    RETURN_NAMES = ("text_image", "alpha_mask", "text_settings", "render_info", "styling_settings")
     FUNCTION = "generate_text"
     CATEGORY = "Raj Video Processing 🎬/Text"
     
@@ -796,7 +796,8 @@ class RajTextGenerator:
                      text_bg_color="#FFFF00", text_bg_padding=5, gradient_enabled=False,
                      gradient_color2="#FF0000", gradient_direction="vertical",
                      container_enabled=False, container_color="#333333", 
-                     container_width=2, container_padding=15, container_border_color="#FFFFFF"):
+                     container_width=2, container_padding=15, container_border_color="#FFFFFF",
+                     container_fill=True):
         
         # Parse colors
         text_color = self.parse_color(font_color)
@@ -1038,7 +1039,63 @@ class RajTextGenerator:
             f"Timing: {time_display:.1f}s (fade in: {fade_in:.1f}s, out: {fade_out:.1f}s)"
         )
         
-        return (image_tensor, mask_tensor, json.dumps(text_config), render_info)
+        # Create styling settings for subtitle engine
+        styling_settings = {
+            "font_config": {
+                "font_name": font_name,
+                "font_size": font_size,
+                "font_weight": font_weight,
+                "font_color": font_color,
+                "font_file": font_file
+            },
+            "layout_config": {
+                "text_align": text_align,
+                "vertical_align": vertical_align,
+                "margin_x": margin_x,
+                "margin_y": margin_y,
+                "line_spacing": line_spacing,
+                "letter_spacing": letter_spacing,
+                "words_per_line": words_per_line,
+                "max_lines": max_lines,
+                "auto_size": auto_size
+            },
+            "effects_config": {
+                "text_border_width": text_border_width,
+                "text_border_color": text_border_color,
+                "shadow_enabled": shadow_enabled,
+                "shadow_offset_x": shadow_offset_x,
+                "shadow_offset_y": shadow_offset_y,
+                "shadow_color": shadow_color,
+                "shadow_blur": shadow_blur,
+                "text_bg_enabled": text_bg_enabled,
+                "text_bg_color": text_bg_color,
+                "text_bg_padding": text_bg_padding,
+                "gradient_enabled": gradient_enabled,
+                "gradient_color2": gradient_color2,
+                "gradient_direction": gradient_direction
+            },
+            "container_config": {
+                "container_enabled": container_enabled,
+                "container_color": container_color,
+                "container_width": container_width,
+                "container_padding": container_padding,
+                "container_border_color": container_border_color,
+                "container_fill": container_fill
+            },
+            "output_config": {
+                "output_width": output_width,
+                "output_height": output_height,
+                "base_opacity": base_opacity,
+                "background_color": background_color
+            },
+            "timing_config": {
+                "time_display": time_display,
+                "fade_in": fade_in,
+                "fade_out": fade_out
+            }
+        }
+        
+        return (image_tensor, mask_tensor, json.dumps(text_config), render_info, styling_settings)
 
 
 # Test node
