@@ -178,9 +178,77 @@ class RajTextGenerator:
     FUNCTION = "generate_text"
     CATEGORY = "Raj Video Processing 🎬/Text"
     
+    # Cache for found system fonts
+    SYSTEM_FONT_CACHE = {}
+    
+    @classmethod
+    def find_system_font(cls, font_name: str) -> Optional[str]:
+        """Find font file in system directories."""
+        # Check cache first
+        if font_name in cls.SYSTEM_FONT_CACHE:
+            return cls.SYSTEM_FONT_CACHE[font_name]
+        
+        import platform
+        
+        system = platform.system()
+        font_dirs = []
+        
+        if system == "Darwin":  # macOS
+            font_dirs = [
+                "/System/Library/Fonts/",
+                "/Library/Fonts/",
+                os.path.expanduser("~/Library/Fonts/")
+            ]
+        elif system == "Linux":
+            font_dirs = [
+                "/usr/share/fonts/",
+                "/usr/local/share/fonts/",
+                os.path.expanduser("~/.fonts/")
+            ]
+        elif system == "Windows":
+            font_dirs = [
+                "C:\\Windows\\Fonts\\",
+                os.path.expanduser("~\\AppData\\Local\\Microsoft\\Windows\\Fonts\\")
+            ]
+        
+        # Search for font file
+        found_path = None
+        for font_dir in font_dirs:
+            if os.path.exists(font_dir):
+                for root, dirs, files in os.walk(font_dir):
+                    for file in files:
+                        if font_name.lower() in file.lower():
+                            if file.endswith(('.ttf', '.ttc', '.otf')):
+                                found_path = os.path.join(root, file)
+                                break
+                    if found_path:
+                        break
+                if found_path:
+                    break
+        
+        # Cache the result (even if None to avoid repeated searches)
+        cls.SYSTEM_FONT_CACHE[font_name] = found_path
+        return found_path
+    
+    @classmethod
+    def validate_font(cls, font, font_name: str, font_size: int) -> bool:
+        """Validate that font is working correctly."""
+        try:
+            test_text = "Test"
+            bbox = font.getbbox(test_text)
+            if bbox:
+                height = bbox[3] - bbox[1]
+                # Check if font height is reasonable (at least 30% of requested size)
+                if height < font_size * 0.3:
+                    logger.warning(f"Font {font_name} renders too small: {height}px vs requested {font_size}px")
+                    return False
+            return True
+        except:
+            return False
+    
     @classmethod
     def get_font(cls, font_name: str, font_size: int, font_file: str = "") -> ImageFont:
-        """Get or download font."""
+        """Get or download font with improved fallback."""
         cache_key = f"{font_name}_{font_size}_{font_file}"
         
         if cache_key in cls.FONT_CACHE:
@@ -192,12 +260,13 @@ class RajTextGenerator:
         if font_file and os.path.exists(font_file):
             try:
                 font = ImageFont.truetype(font_file, font_size)
-                cls.FONT_CACHE[cache_key] = font
-                return font
+                if cls.validate_font(font, font_name, font_size):
+                    cls.FONT_CACHE[cache_key] = font
+                    return font
             except Exception as e:
                 logger.warning(f"Failed to load custom font: {e}")
         
-        # Try system fonts
+        # Try direct system font paths
         font_paths = [
             f"/System/Library/Fonts/{font_name}.ttc",
             f"/System/Library/Fonts/{font_name}.ttf",
@@ -211,10 +280,24 @@ class RajTextGenerator:
             if os.path.exists(path):
                 try:
                     font = ImageFont.truetype(path, font_size)
-                    cls.FONT_CACHE[cache_key] = font
-                    return font
+                    if cls.validate_font(font, font_name, font_size):
+                        cls.FONT_CACHE[cache_key] = font
+                        return font
                 except:
                     continue
+        
+        # Try system font discovery
+        found_path = cls.find_system_font(font_name)
+        if found_path:
+            try:
+                font = ImageFont.truetype(found_path, font_size)
+                if cls.validate_font(font, font_name, font_size):
+                    if cache_key not in cls.FONT_CACHE:  # Only log on first load
+                        logger.info(f"Found font at: {found_path}")
+                    cls.FONT_CACHE[cache_key] = font
+                    return font
+            except Exception as e:
+                logger.warning(f"Failed to load found font: {e}")
         
         # Try to download from Google Fonts
         if font_name in cls.GOOGLE_FONTS:
@@ -230,11 +313,34 @@ class RajTextGenerator:
                 except Exception as e:
                     logger.warning(f"Could not download font {font_name}: {e}")
         
-        # Fallback to default font
+        # Improved fallback to default font
+        logger.warning(f"Font '{font_name}' not found, using fallback")
         try:
+            # Try to load a basic system font at requested size
+            fallback_fonts = [
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/Library/Fonts/Arial Unicode.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "C:\\Windows\\Fonts\\arial.ttf"
+            ]
+            
+            for fallback_path in fallback_fonts:
+                if os.path.exists(fallback_path):
+                    try:
+                        font = ImageFont.truetype(fallback_path, font_size)
+                        logger.info(f"Using fallback font: {fallback_path}")
+                        break
+                    except:
+                        continue
+            
+            if not font:
+                # Last resort: use default but warn user
+                font = ImageFont.load_default()
+                logger.warning(f"Using tiny default font - requested size {font_size}px not available")
+        except Exception as e:
+            logger.error(f"Failed to load fallback font: {e}")
             font = ImageFont.load_default()
-        except:
-            font = ImageFont.truetype("arial.ttf", font_size) if os.path.exists("arial.ttf") else None
         
         if font:
             cls.FONT_CACHE[cache_key] = font
@@ -330,8 +436,15 @@ class RajTextGenerator:
                 test_font = self.get_font(font_name, test_size, font_file)
                 lines = self.wrap_text(text, test_font, available_width, words_per_line)
                 
-                # Calculate total height
-                line_height = test_size * line_spacing
+                # Calculate total height using actual font metrics
+                if hasattr(test_font, 'getmetrics'):
+                    ascent, descent = test_font.getmetrics()
+                    line_height = (ascent + descent) * line_spacing
+                else:
+                    # Fallback for bitmap fonts
+                    test_bbox = test_font.getbbox("Ay")
+                    line_height = (test_bbox[3] - test_bbox[1]) * line_spacing if test_bbox else test_size * line_spacing
+                
                 total_height = len(lines) * line_height
                 
                 if total_height <= available_height and (max_lines == 0 or len(lines) <= max_lines):
@@ -351,8 +464,15 @@ class RajTextGenerator:
             if len(lines) == max_lines:
                 lines[-1] = lines[-1] + "..."
         
-        # Calculate line height and total text height
-        line_height = font_size * line_spacing
+        # Calculate line height and total text height using actual font metrics
+        if hasattr(font, 'getmetrics'):
+            ascent, descent = font.getmetrics()
+            line_height = (ascent + descent) * line_spacing
+        else:
+            # Fallback for bitmap fonts
+            test_bbox = font.getbbox("Ay")
+            line_height = (test_bbox[3] - test_bbox[1]) * line_spacing if test_bbox else font_size * line_spacing
+        
         total_height = len(lines) * line_height
         
         # Calculate starting Y position based on vertical alignment
@@ -363,11 +483,18 @@ class RajTextGenerator:
         else:  # middle
             y = (output_height - total_height) // 2
         
-        # Draw each line
+        # Draw each line with improved positioning
         for line in lines:
-            # Get line width
-            bbox = font.getbbox(line)
-            line_width = bbox[2] - bbox[0] if bbox else 0
+            # Get line width with proper metrics
+            bbox = font.getbbox(line) if hasattr(font, 'getbbox') else None
+            if bbox:
+                line_width = bbox[2] - bbox[0]
+                # Account for left bearing
+                x_offset = -bbox[0] if bbox[0] < 0 else 0
+            else:
+                # Rough estimate for fallback
+                line_width = len(line) * (font_size * 0.6)
+                x_offset = 0
             
             # Calculate X position based on alignment
             if text_align == "left":
@@ -383,15 +510,15 @@ class RajTextGenerator:
             # Apply letter spacing if needed
             if letter_spacing != 0:
                 # Draw each character separately with spacing
-                char_x = x
+                char_x = x + x_offset
                 for char in line:
                     draw.text((char_x, y), char, font=font, fill=text_color)
-                    char_bbox = font.getbbox(char)
-                    char_width = char_bbox[2] - char_bbox[0] if char_bbox else 0
+                    char_bbox = font.getbbox(char) if hasattr(font, 'getbbox') else None
+                    char_width = char_bbox[2] - char_bbox[0] if char_bbox else font_size * 0.6
                     char_x += char_width + letter_spacing
             else:
-                # Draw the entire line
-                draw.text((x, y), line, font=font, fill=text_color)
+                # Draw the entire line with offset
+                draw.text((x + x_offset, y), line, font=font, fill=text_color)
             
             y += line_height
         
