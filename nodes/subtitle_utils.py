@@ -8,9 +8,79 @@ from typing import List, Dict, Tuple, Optional, Any
 from .utils import logger
 
 
+def correct_word_timing(word_data: List[Dict]) -> List[Dict]:
+    """
+    Correct timing issues in word data.
+    
+    Args:
+        word_data: Raw word data that may have timing issues
+        
+    Returns:
+        Corrected word data with valid timing
+    """
+    if not word_data:
+        return []
+        
+    corrected_words = []
+    previous_end = 0.0
+    
+    for i, word_item in enumerate(word_data):
+        if not isinstance(word_item, dict):
+            logger.warning(f"Skipping non-dict word item at index {i}: {word_item}")
+            continue
+            
+        word = word_item.copy()  # Don't modify original
+        
+        # Get timing values with flexible field access
+        start_val = word.get('start_time', word.get('start', None))
+        end_val = word.get('end_time', word.get('end', None))
+        
+        if start_val is None or end_val is None:
+            logger.warning(f"Word {i} missing timing data, skipping: {word.get('word', 'UNKNOWN')}")
+            continue
+            
+        try:
+            start_val = float(start_val)
+            end_val = float(end_val)
+        except (ValueError, TypeError):
+            logger.warning(f"Word {i} has invalid timing values, skipping: {word.get('word', 'UNKNOWN')}")
+            continue
+        
+        # Fix timing issues
+        if start_val >= end_val:
+            # If start >= end, create a minimum duration
+            min_duration = 0.1  # 100ms minimum
+            if start_val < previous_end:
+                # Overlap with previous word, adjust start
+                start_val = previous_end
+            end_val = start_val + min_duration
+            logger.warning(f"Corrected timing for word {i} '{word.get('word', 'UNKNOWN')}': set duration to {min_duration}s")
+        
+        # Ensure no overlap with previous word
+        if start_val < previous_end:
+            start_val = previous_end
+            if end_val <= start_val:
+                end_val = start_val + 0.1
+            logger.warning(f"Corrected overlap for word {i} '{word.get('word', 'UNKNOWN')}': moved start to {start_val:.3f}s")
+        
+        # Update timing in word data (use both field formats for compatibility)
+        word['start_time'] = start_val
+        word['end_time'] = end_val
+        word['start'] = start_val  # Keep original format too
+        word['end'] = end_val
+        
+        corrected_words.append(word)
+        previous_end = end_val
+    
+    if len(corrected_words) != len(word_data):
+        logger.warning(f"Timing correction removed {len(word_data) - len(corrected_words)} words due to invalid data")
+    
+    return corrected_words
+
+
 def parse_whisper_word_data(word_data: List[Dict]) -> List[Dict]:
     """
-    Parse whisper word-level timing data into standardized format.
+    Parse whisper word-level timing data into standardized format with automatic timing correction.
     
     Expected input format from RajWhisperProcess:
     [{"word": "hello", "start": 0.5, "end": 1.2, "confidence": 0.95}, ...]
@@ -22,15 +92,18 @@ def parse_whisper_word_data(word_data: List[Dict]) -> List[Dict]:
         logger.warning("Empty word data provided to parse_whisper_word_data")
         return []
     
+    # First correct any timing issues
+    corrected_data = correct_word_timing(word_data)
+    
     parsed_words = []
-    for i, word_item in enumerate(word_data):
+    for i, word_item in enumerate(corrected_data):
         try:
             # Handle different possible input formats
             if isinstance(word_item, dict):
                 word_text = word_item.get('word', '').strip()
-                start_time = float(word_item.get('start', word_item.get('start_time', 0)))
-                end_time = float(word_item.get('end', word_item.get('end_time', start_time + 0.5)))
-                confidence = float(word_item.get('confidence', word_item.get('score', 1.0)))
+                start_time = float(word_item.get('start_time', word_item.get('start', 0)))
+                end_time = float(word_item.get('end_time', word_item.get('end', start_time + 0.5)))
+                confidence = float(word_item.get('confidence', word_item.get('probability', word_item.get('score', 1.0))))
             else:
                 logger.warning(f"Unexpected word item format at index {i}: {word_item}")
                 continue
@@ -47,7 +120,7 @@ def parse_whisper_word_data(word_data: List[Dict]) -> List[Dict]:
             logger.warning(f"Error parsing word item at index {i}: {e}")
             continue
     
-    logger.info(f"Parsed {len(parsed_words)} words from {len(word_data)} input items")
+    logger.info(f"Parsed {len(parsed_words)} words from {len(word_data)} input items (corrected {len(word_data) - len(corrected_data)} timing issues)")
     return parsed_words
 
 
@@ -525,6 +598,7 @@ def create_timing_windows(word_data: List[Dict],
 def validate_word_timing_data(word_data: List[Dict]) -> Tuple[bool, List[str]]:
     """
     Validate word timing data for potential issues.
+    Support both Whisper format (start/end) and processed format (start_time/end_time).
     
     Args:
         word_data: Word timing data to validate
@@ -538,24 +612,69 @@ def validate_word_timing_data(word_data: List[Dict]) -> Tuple[bool, List[str]]:
         issues.append("No word data provided")
         return False, issues
     
-    # Check for required fields
-    required_fields = ['word', 'start_time', 'end_time']
-    for i, word in enumerate(word_data):
-        for field in required_fields:
-            if field not in word:
-                issues.append(f"Word {i} missing required field: {field}")
-        
-        # Check timing consistency
-        if word.get('start_time', 0) >= word.get('end_time', 0):
-            issues.append(f"Word {i} '{word.get('word', '')}' has invalid timing: start >= end")
+    logger.debug(f"Validating {len(word_data)} words. Sample word structure: {word_data[0] if word_data else 'None'}")
     
-    # Check for timing overlaps and gaps
-    sorted_words = sorted(word_data, key=lambda w: w.get('start_time', 0))
+    # Check for required fields - support both formats
+    for i, word in enumerate(word_data):
+        if not isinstance(word, dict):
+            issues.append(f"Word {i} is not a dictionary: {type(word)}")
+            continue
+            
+        # Debug: Show actual fields for problematic words
+        if i == 17 or i >= len(word_data) - 5:  # Log last 5 words and word 17 specifically
+            logger.debug(f"Word {i} fields: {list(word.keys())}, values: {word}")
+        
+        # Check word field
+        if 'word' not in word:
+            issues.append(f"Word {i} missing 'word' field. Available fields: {list(word.keys())}")
+        
+        # Check timing fields - accept either start/end or start_time/end_time
+        has_start = 'start' in word or 'start_time' in word
+        has_end = 'end' in word or 'end_time' in word
+        
+        if not has_start:
+            issues.append(f"Word {i} missing timing field: need 'start' or 'start_time'. Available fields: {list(word.keys())}")
+        if not has_end:
+            issues.append(f"Word {i} missing timing field: need 'end' or 'end_time'. Available fields: {list(word.keys())}")
+        
+        # Check timing consistency - use flexible field access with better error handling
+        start_val = word.get('start_time', word.get('start', None))
+        end_val = word.get('end_time', word.get('end', None))
+        
+        # Handle None values
+        if start_val is None:
+            issues.append(f"Word {i} '{word.get('word', 'UNKNOWN')}' has no start timing value")
+            continue
+        if end_val is None:
+            issues.append(f"Word {i} '{word.get('word', 'UNKNOWN')}' has no end timing value")
+            continue
+            
+        # Convert to float and validate
+        try:
+            start_val = float(start_val)
+            end_val = float(end_val)
+        except (ValueError, TypeError) as e:
+            issues.append(f"Word {i} '{word.get('word', 'UNKNOWN')}' has invalid timing values: start={start_val}, end={end_val} ({e})")
+            continue
+            
+        # Check for invalid timing with tolerance for very short durations
+        if start_val >= end_val:
+            duration = end_val - start_val
+            if abs(duration) < 0.001:  # Less than 1ms - likely a rounding error
+                logger.warning(f"Word {i} '{word.get('word', 'UNKNOWN')}' has very short duration ({duration:.6f}s), allowing it")
+            else:
+                issues.append(f"Word {i} '{word.get('word', 'UNKNOWN')}' has invalid timing: start >= end ({start_val:.3f} >= {end_val:.3f}, duration: {duration:.3f}s)")
+    
+    # Check for timing overlaps and gaps - use flexible field access
+    sorted_words = sorted(word_data, key=lambda w: w.get('start_time', w.get('start', 0)))
     for i in range(len(sorted_words) - 1):
         current_word = sorted_words[i]
         next_word = sorted_words[i + 1]
         
-        gap = next_word.get('start_time', 0) - current_word.get('end_time', 0)
+        current_end = current_word.get('end_time', current_word.get('end', 0))
+        next_start = next_word.get('start_time', next_word.get('start', 0))
+        gap = next_start - current_end
+        
         if gap < -0.1:  # Allow small overlaps
             issues.append(f"Significant overlap between words: '{current_word.get('word', '')}' and '{next_word.get('word', '')}'")
     
