@@ -242,6 +242,32 @@ class RajTextGenerator:
                     "default": "vertical",
                     "tooltip": "Gradient direction"
                 }),
+                "container_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Enable container box around text"
+                }),
+                "container_color": ("STRING", {
+                    "default": "#333333",
+                    "tooltip": "Container box background color"
+                }),
+                "container_width": ("INT", {
+                    "default": 2,
+                    "min": 0,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Container box border width"
+                }),
+                "container_padding": ("INT", {
+                    "default": 15,
+                    "min": 0,
+                    "max": 100,
+                    "step": 1,
+                    "tooltip": "Container box padding around text"
+                }),
+                "container_border_color": ("STRING", {
+                    "default": "#FFFFFF",
+                    "tooltip": "Container box border color"
+                }),
             }
         }
     
@@ -283,16 +309,44 @@ class RajTextGenerator:
                 os.path.expanduser("~\\AppData\\Local\\Microsoft\\Windows\\Fonts\\")
             ]
         
-        # Search for font file
+        # Search for font file with improved matching
         found_path = None
+        
+        # First try exact matches and common variations
+        exact_variations = [
+            f"{font_name}.ttf",
+            f"{font_name}.ttc", 
+            f"{font_name}.otf",
+            f"{font_name} Regular.ttf",
+            f"{font_name}Regular.ttf",
+        ]
+        
         for font_dir in font_dirs:
             if os.path.exists(font_dir):
                 for root, dirs, files in os.walk(font_dir):
-                    for file in files:
-                        if font_name.lower() in file.lower():
-                            if file.endswith(('.ttf', '.ttc', '.otf')):
+                    # First priority: exact name matches
+                    for exact_name in exact_variations:
+                        if exact_name in files:
+                            found_path = os.path.join(root, exact_name)
+                            break
+                    
+                    # Second priority: case-insensitive exact matches
+                    if not found_path:
+                        for file in files:
+                            if file.lower() in [v.lower() for v in exact_variations]:
+                                if file.endswith(('.ttf', '.ttc', '.otf')):
+                                    found_path = os.path.join(root, file)
+                                    break
+                    
+                    # Last resort: partial match but exclude problematic fonts
+                    if not found_path:
+                        for file in files:
+                            if (font_name.lower() in file.lower() and 
+                                file.endswith(('.ttf', '.ttc', '.otf')) and
+                                not any(exclude in file.lower() for exclude in ['hb', 'hebrew', 'symbol', 'wingding'])):
                                 found_path = os.path.join(root, file)
                                 break
+                    
                     if found_path:
                         break
                 if found_path:
@@ -304,18 +358,46 @@ class RajTextGenerator:
     
     @classmethod
     def validate_font(cls, font, font_name: str, font_size: int) -> bool:
-        """Validate that font is working correctly."""
+        """Validate that font is working correctly and can render English text."""
         try:
-            test_text = "Test"
-            bbox = font.getbbox(test_text)
-            if bbox:
-                height = bbox[3] - bbox[1]
-                # Check if font height is reasonable (at least 30% of requested size)
-                if height < font_size * 0.3:
-                    logger.warning(f"Font {font_name} renders too small: {height}px vs requested {font_size}px")
+            # Test basic English characters
+            test_texts = ["Test", "ABC", "abc", "123"]
+            
+            for test_text in test_texts:
+                bbox = font.getbbox(test_text)
+                if bbox:
+                    height = bbox[3] - bbox[1]
+                    width = bbox[2] - bbox[0]
+                    
+                    # Check if font height is reasonable (at least 30% of requested size)
+                    if height < font_size * 0.3:
+                        logger.warning(f"Font {font_name} renders too small: {height}px vs requested {font_size}px")
+                        return False
+                    
+                    # Check if font width is reasonable (boxes usually have 0 or very small width)
+                    if width < len(test_text) * (font_size * 0.2):
+                        logger.warning(f"Font {font_name} may render as boxes - width too small: {width}px for '{test_text}'")
+                        return False
+                        
+                    # Additional validation: check if font appears to be rendering actual glyphs
+                    # Different characters should have different widths (unless it's a monospace font)
+                    if test_text == "Test":
+                        i_bbox = font.getbbox("i")
+                        m_bbox = font.getbbox("m") 
+                        if i_bbox and m_bbox:
+                            i_width = i_bbox[2] - i_bbox[0]
+                            m_width = m_bbox[2] - m_bbox[0]
+                            # 'm' should typically be wider than 'i', unless monospace
+                            if i_width == m_width and i_width < font_size * 0.3:
+                                logger.warning(f"Font {font_name} may not be rendering glyphs correctly")
+                                return False
+                else:
+                    logger.warning(f"Font {font_name} failed to get bbox for '{test_text}'")
                     return False
+                    
             return True
-        except:
+        except Exception as e:
+            logger.error(f"Font validation failed for {font_name}: {e}")
             return False
     
     @classmethod
@@ -420,18 +502,67 @@ class RajTextGenerator:
         return font
     
     @classmethod
+    def get_explicit_font_path(cls, font_name: str, font_weight: str) -> str:
+        """Get explicit system font paths for common fonts to avoid fallback issues."""
+        # Explicit font path mappings for macOS system fonts
+        explicit_paths = {
+            "Arial": {
+                "normal": "/System/Library/Fonts/Arial.ttf",
+                "bold": "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "italic": "/System/Library/Fonts/Supplemental/Arial Italic.ttf",
+                "bold_italic": "/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"
+            },
+            "Helvetica": {
+                "normal": "/System/Library/Fonts/Helvetica.ttc",
+                "bold": "/System/Library/Fonts/Helvetica.ttc",  # Contains multiple weights
+                "italic": "/System/Library/Fonts/Helvetica.ttc",
+                "bold_italic": "/System/Library/Fonts/Helvetica.ttc"
+            },
+            "Times New Roman": {
+                "normal": "/System/Library/Fonts/Times New Roman.ttf",
+                "bold": "/System/Library/Fonts/Times New Roman Bold.ttf", 
+                "italic": "/System/Library/Fonts/Times New Roman Italic.ttf",
+                "bold_italic": "/System/Library/Fonts/Times New Roman Bold Italic.ttf"
+            },
+            "Courier New": {
+                "normal": "/System/Library/Fonts/Courier New.ttf",
+                "bold": "/System/Library/Fonts/Courier New Bold.ttf",
+                "italic": "/System/Library/Fonts/Courier New Italic.ttf", 
+                "bold_italic": "/System/Library/Fonts/Courier New Bold Italic.ttf"
+            }
+        }
+        
+        if font_name in explicit_paths and font_weight in explicit_paths[font_name]:
+            path = explicit_paths[font_name][font_weight]
+            if os.path.exists(path):
+                return path
+        
+        return None
+    
+    @classmethod
     def get_font_with_style(cls, font_name: str, font_size: int, font_weight: str, font_file: str = "") -> ImageFont:
         """Get font with specific weight/style."""
         # Try custom font file first
         if font_file:
             return cls.get_font(font_name, font_size, font_file)
         
-        # Map font weights to actual font names
+        # Try explicit system font paths first
+        explicit_path = cls.get_explicit_font_path(font_name, font_weight)
+        if explicit_path:
+            try:
+                font = ImageFont.truetype(explicit_path, font_size)
+                if cls.validate_font(font, font_name, font_size):
+                    logger.info(f"Using explicit font path: {explicit_path}")
+                    return font
+            except Exception as e:
+                logger.warning(f"Failed to load explicit font path {explicit_path}: {e}")
+        
+        # Map font weights to actual font names - prioritize base font name for normal
         weight_variants = {
-            "normal": [font_name, f"{font_name} Regular", f"{font_name}-Regular"],
-            "bold": [f"{font_name} Bold", f"{font_name}-Bold", f"{font_name}Bold"],
-            "italic": [f"{font_name} Italic", f"{font_name}-Italic", f"{font_name}Italic"],
-            "bold_italic": [f"{font_name} Bold Italic", f"{font_name}-BoldItalic", f"{font_name}BoldItalic"]
+            "normal": [font_name, f"{font_name} Regular", f"{font_name}-Regular", f"{font_name}Regular"],
+            "bold": [f"{font_name} Bold", f"{font_name}-Bold", f"{font_name}Bold", f"{font_name} Heavy", f"{font_name}-Heavy"],
+            "italic": [f"{font_name} Italic", f"{font_name}-Italic", f"{font_name}Italic", f"{font_name} Oblique"],
+            "bold_italic": [f"{font_name} Bold Italic", f"{font_name}-BoldItalic", f"{font_name}BoldItalic", f"{font_name} Heavy Italic"]
         }
         
         # Try specific weight variant first
@@ -441,10 +572,20 @@ class RajTextGenerator:
                 if font and cls.validate_font(font, variant, font_size):
                     return font
         
-        # Fallback to normal font if specific weight not found
+        # Better fallback system - try alternative strategies
+        if font_weight == "bold":
+            # For bold, try alternative heavy fonts or use synthetic bold
+            alternative_names = [f"{font_name} Heavy", f"{font_name} Black", f"{font_name} Semibold"]
+            for alt_name in alternative_names:
+                alt_font = cls.get_font(alt_name, font_size)
+                if alt_font and cls.validate_font(alt_font, alt_name, font_size):
+                    logger.info(f"Using alternative bold font: {alt_name}")
+                    return alt_font
+        
+        # Final fallback to normal font
         font = cls.get_font(font_name, font_size)
         if font_weight != "normal":
-            logger.info(f"Font weight '{font_weight}' not found for {font_name}, using normal")
+            logger.warning(f"Font weight '{font_weight}' not found for {font_name}, using normal. Consider using synthetic bold rendering.")
         
         return font
     
@@ -554,6 +695,68 @@ class RajTextGenerator:
             # Draw background rectangle
             draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=bg_color)
     
+    def draw_container_box(self, draw, lines, font, start_y, line_height, output_width, output_height, 
+                          text_align, margin_x, margin_y, container_color, container_width, container_padding, container_border_color):
+        """Draw container box around all text."""
+        if not lines:
+            return
+            
+        # Calculate total text bounds
+        min_x = output_width
+        max_x = 0
+        min_y = start_y
+        max_y = start_y + len(lines) * line_height
+        
+        y = start_y
+        for line in lines:
+            bbox = font.getbbox(line) if hasattr(font, 'getbbox') else None
+            if bbox:
+                line_width = bbox[2] - bbox[0]
+                x_offset = -bbox[0] if bbox[0] < 0 else 0
+            else:
+                line_width = len(line) * (font.size * 0.6)
+                x_offset = 0
+            
+            # Calculate X position based on alignment
+            if text_align == "left":
+                x = margin_x
+            elif text_align == "right":
+                x = output_width - margin_x - line_width
+            elif text_align == "center":
+                x = (output_width - line_width) // 2
+            else:  # justify
+                x = margin_x
+            
+            line_min_x = x + x_offset
+            line_max_x = x + x_offset + line_width
+            
+            min_x = min(min_x, line_min_x)
+            max_x = max(max_x, line_max_x)
+            y += line_height
+        
+        # Add container padding
+        container_x1 = min_x - container_padding
+        container_y1 = min_y - container_padding
+        container_x2 = max_x + container_padding  
+        container_y2 = max_y + container_padding
+        
+        # Ensure container stays within image bounds
+        container_x1 = max(0, container_x1)
+        container_y1 = max(0, container_y1)
+        container_x2 = min(output_width, container_x2)
+        container_y2 = min(output_height, container_y2)
+        
+        # Draw container background
+        draw.rectangle([container_x1, container_y1, container_x2, container_y2], 
+                      fill=container_color)
+        
+        # Draw container border if width > 0
+        if container_width > 0:
+            for i in range(container_width):
+                draw.rectangle([container_x1 + i, container_y1 + i, 
+                              container_x2 - i, container_y2 - i], 
+                              outline=container_border_color, width=1)
+    
     @staticmethod
     def wrap_text(text: str, font: ImageFont, max_width: int, words_per_line: int = 0) -> List[str]:
         """Wrap text to fit within max width."""
@@ -591,7 +794,9 @@ class RajTextGenerator:
                      shadow_enabled=False, shadow_offset_x=2, shadow_offset_y=2,
                      shadow_color="#000000", shadow_blur=2, text_bg_enabled=False,
                      text_bg_color="#FFFF00", text_bg_padding=5, gradient_enabled=False,
-                     gradient_color2="#FF0000", gradient_direction="vertical"):
+                     gradient_color2="#FF0000", gradient_direction="vertical",
+                     container_enabled=False, container_color="#333333", 
+                     container_width=2, container_padding=15, container_border_color="#FFFFFF"):
         
         # Parse colors
         text_color = self.parse_color(font_color)
@@ -610,6 +815,8 @@ class RajTextGenerator:
         shadow_color_parsed = self.parse_color(shadow_color)
         text_bg_color_parsed = self.parse_color(text_bg_color)
         gradient_color2_parsed = self.parse_color(gradient_color2)
+        container_color_parsed = self.parse_color(container_color)
+        container_border_color_parsed = self.parse_color(container_border_color)
         
         font = self.get_font_with_style(font_name, font_size, font_weight, font_file)
         if not font:
@@ -674,6 +881,14 @@ class RajTextGenerator:
             y = output_height - margin_y - total_height
         else:  # middle
             y = (output_height - total_height) // 2
+        
+        # Draw container box if enabled (before text)
+        start_y = y
+        if container_enabled:
+            self.draw_container_box(draw, lines, font, start_y, line_height, 
+                                  output_width, output_height, text_align, 
+                                  margin_x, margin_y, container_color_parsed, 
+                                  container_width, container_padding, container_border_color_parsed)
         
         # Handle gradient text color
         if gradient_enabled:
@@ -803,6 +1018,11 @@ class RajTextGenerator:
             "shadow_enabled": shadow_enabled,
             "text_bg_enabled": text_bg_enabled,
             "gradient_enabled": gradient_enabled,
+            "container_enabled": container_enabled,
+            "container_color": container_color,
+            "container_width": container_width,
+            "container_padding": container_padding,
+            "container_border_color": container_border_color,
             "output_width": output_width,
             "output_height": output_height,
             "actual_lines": len(lines),
