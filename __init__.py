@@ -14,6 +14,10 @@ try:
     from .nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
     from .nodes.video_segmenter import RajVideoSegmenter
     from .nodes.video_mask_composite import RajVideoMaskComposite
+    from .nodes.video_overlay import RajVideoOverlay
+    from .nodes.video_resize_toolkit import RajVideoResizeToolkit
+    from .nodes.video_opacity_gradient import RajVideoOpacityGradient
+    from .nodes.video_chroma_key import RajVideoChromaKey
 except ImportError:
     # Fallback for direct testing
     from nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
@@ -24,6 +28,10 @@ except ImportError:
     from nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
     from nodes.video_segmenter import RajVideoSegmenter
     from nodes.video_mask_composite import RajVideoMaskComposite
+    from nodes.video_overlay import RajVideoOverlay
+    from nodes.video_resize_toolkit import RajVideoResizeToolkit
+    from nodes.video_opacity_gradient import RajVideoOpacityGradient
+    from nodes.video_chroma_key import RajVideoChromaKey
 
 # Node class mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -41,6 +49,10 @@ NODE_CLASS_MAPPINGS = {
     "RajTransitionLibrary": RajTransitionLibrary,
     "RajVideoSegmenter": RajVideoSegmenter,
     "RajVideoMaskComposite": RajVideoMaskComposite,
+    "RajVideoOverlay": RajVideoOverlay,
+    "RajVideoResizeToolkit": RajVideoResizeToolkit,
+    "RajVideoOpacityGradient": RajVideoOpacityGradient,
+    "RajVideoChromaKey": RajVideoChromaKey,
 }
 
 # Display names in ComfyUI interface
@@ -59,6 +71,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajTransitionLibrary": "🔄 Raj Transition Library",
     "RajVideoSegmenter": "✂️ Raj Video Segmenter",
     "RajVideoMaskComposite": "🎭 Raj Video Mask Composite",
+    "RajVideoOverlay": "🎬 Raj Video Overlay",
+    "RajVideoResizeToolkit": "🔧 Raj Video Resize Toolkit",
+    "RajVideoOpacityGradient": "🌈 Raj Video Opacity Gradient",
+    "RajVideoChromaKey": "🎬 Raj Video Chroma Key",
 }
 
 # Web directory for custom UI components (optional)
@@ -86,6 +102,10 @@ print("   - Effects: Time-based Brightness, Contrast, Blur, Saturation with Easi
 print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
 print("   - NEW: Video Segmenter - Split videos by time with dual outputs")
 print("   - NEW: Mask Composite - Color-based video compositing with thresholding")
+print("   - NEW: Professional Overlay System - Alpha channel, RGBA, Full/BBox modes")
+print("   - NEW: Chroma Key - Green screen removal with edge softening")
+print("   - NEW: Opacity Gradients - Linear, radial, corner, edge gradient masks")
+print("   - NEW: Resize Toolkit - Center crop, fill, stretch with alpha preservation")
 print("   - Video Formats: MP4, MOV, AVI, WebM, GIF")
 print("   - Upload Support: Drag & Drop, Upload Button")
 print("   - Aspect Ratio: Resize, Pad, Crop, Stretch handling")
