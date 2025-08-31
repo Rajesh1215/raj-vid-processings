@@ -2,6 +2,7 @@ import os
 import torch
 import cv2
 from .utils import get_optimal_device, video_to_tensor, tensor_to_video_frames, logger
+from .audio_utils import AudioProcessor
 
 try:
     import folder_paths
@@ -89,8 +90,8 @@ class RajVideoUpload:
             }
         }
     
-    RETURN_TYPES = ("IMAGE", "STRING", "INT", "FLOAT")
-    RETURN_NAMES = ("frames", "video_info", "frame_count", "fps")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "STRING", "INT", "FLOAT", "STRING")
+    RETURN_NAMES = ("frames", "audio", "video_info", "frame_count", "fps", "audio_info")
     FUNCTION = "upload_and_load_video"
     CATEGORY = "Raj Video Processing 🎬"
     
@@ -134,6 +135,14 @@ class RajVideoUpload:
         
         logger.info(f"📤 Processing uploaded video: {os.path.basename(video_path)}")
         
+        # Extract audio first (parallel processing)
+        logger.info(f"🔊 Extracting audio from video...")
+        audio_tensor, audio_metadata = AudioProcessor.extract_audio_from_video(
+            video_path, 
+            target_sample_rate=22050,  # Good for Whisper
+            mono=True
+        )
+        
         # Load video
         try:
             frames_tensor, video_info = video_to_tensor(
@@ -172,14 +181,17 @@ class RajVideoUpload:
             # Convert to ComfyUI format
             frames_comfy = tensor_to_video_frames(frames_tensor)
             
-            # Create info string
+            # Create info strings
             info_str = f"Upload: {os.path.basename(video_path)} | " \
                       f"Device: {video_info['device']} | " \
                       f"Frames: {video_info['total_frames']} | " \
                       f"FPS: {video_info['fps']:.2f} | " \
                       f"Size: {video_info['width']}x{video_info['height']}"
             
+            audio_info_str = AudioProcessor.get_audio_info(audio_tensor, audio_metadata['sample_rate'])
+            
             logger.info(f"✅ Upload processed: {info_str}")
+            logger.info(f"🔊 Audio extracted: {audio_info_str}")
             
             # Prepare UI preview data (VHS-compatible format)
             video_format = os.path.splitext(video_path)[1][1:] or "mp4"
@@ -192,7 +204,7 @@ class RajVideoUpload:
             
             return {
                 "ui": {"gifs": [preview]},
-                "result": (frames_comfy, info_str, video_info['total_frames'], video_info['fps'])
+                "result": (frames_comfy, audio_tensor, info_str, video_info['total_frames'], video_info['fps'], audio_info_str)
             }
             
         except Exception as e:

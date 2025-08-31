@@ -18,6 +18,18 @@ try:
     from .nodes.video_resize_toolkit import RajVideoResizeToolkit
     from .nodes.video_opacity_gradient import RajVideoOpacityGradient
     from .nodes.video_chroma_key import RajVideoChromaKey
+    # Text Generation Nodes
+    from .nodes.text_generator import RajTextGenerator
+    from .nodes.whisper_captions import RajWhisperCaptions
+    from .nodes.text_effects import RajTextEffects
+    from .nodes.text_animator import RajTextAnimator
+    from .nodes.text_sequencer import RajTextSequencer
+    from .nodes.text_compositor import RajTextCompositor
+    from .nodes.text_presets import RajTextPresets
+    # Audio Processing Nodes
+    from .nodes.whisper_audio import RajWhisperAudio
+    from .nodes.audio_loader import RajAudioLoader, RajAudioProcessor
+    from .nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
 except ImportError:
     # Fallback for direct testing
     from nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
@@ -32,6 +44,18 @@ except ImportError:
     from nodes.video_resize_toolkit import RajVideoResizeToolkit
     from nodes.video_opacity_gradient import RajVideoOpacityGradient
     from nodes.video_chroma_key import RajVideoChromaKey
+    # Text Generation Nodes
+    from nodes.text_generator import RajTextGenerator
+    from nodes.whisper_captions import RajWhisperCaptions
+    from nodes.text_effects import RajTextEffects
+    from nodes.text_animator import RajTextAnimator
+    from nodes.text_sequencer import RajTextSequencer
+    from nodes.text_compositor import RajTextCompositor
+    from nodes.text_presets import RajTextPresets
+    # Audio Processing Nodes
+    from nodes.whisper_audio import RajWhisperAudio
+    from nodes.audio_loader import RajAudioLoader, RajAudioProcessor
+    from nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
 
 # Node class mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -53,6 +77,20 @@ NODE_CLASS_MAPPINGS = {
     "RajVideoResizeToolkit": RajVideoResizeToolkit,
     "RajVideoOpacityGradient": RajVideoOpacityGradient,
     "RajVideoChromaKey": RajVideoChromaKey,
+    # Text Generation Nodes
+    "RajTextGenerator": RajTextGenerator,
+    "RajWhisperCaptions": RajWhisperCaptions,
+    "RajTextEffects": RajTextEffects,
+    "RajTextAnimator": RajTextAnimator,
+    "RajTextSequencer": RajTextSequencer,
+    "RajTextCompositor": RajTextCompositor,
+    "RajTextPresets": RajTextPresets,
+    # Audio Processing Nodes
+    "RajWhisperAudio": RajWhisperAudio,
+    "RajAudioLoader": RajAudioLoader,
+    "RajAudioProcessor": RajAudioProcessor,
+    "RajAudioPreview": RajAudioPreview,
+    "RajAudioAnalyzer": RajAudioAnalyzer,
 }
 
 # Display names in ComfyUI interface
@@ -75,6 +113,20 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajVideoResizeToolkit": "🔧 Raj Video Resize Toolkit",
     "RajVideoOpacityGradient": "🌈 Raj Video Opacity Gradient",
     "RajVideoChromaKey": "🎬 Raj Video Chroma Key",
+    # Text Generation Nodes
+    "RajTextGenerator": "📝 Raj Text Generator",
+    "RajWhisperCaptions": "🎤 Raj Whisper Captions",
+    "RajTextEffects": "✨ Raj Text Effects",
+    "RajTextAnimator": "🎭 Raj Text Animator",
+    "RajTextSequencer": "⏱️ Raj Text Sequencer",
+    "RajTextCompositor": "🎬 Raj Text Compositor",
+    "RajTextPresets": "📋 Raj Text Presets",
+    # Audio Processing Nodes
+    "RajWhisperAudio": "🎙️ Raj Whisper Audio",
+    "RajAudioLoader": "🔊 Raj Audio Loader",
+    "RajAudioProcessor": "🎚️ Raj Audio Processor",
+    "RajAudioPreview": "🎵 Raj Audio Preview",
+    "RajAudioAnalyzer": "🔍 Raj Audio Analyzer",
 }
 
 # Web directory for custom UI components (optional)
@@ -100,12 +152,31 @@ print("   - GPU Support: MPS (Mac), CUDA (NVIDIA), CPU (Fallback)")
 print("   - Core Nodes: Video Loader, Concatenator, Sequencer, Video Saver, Video Upload")
 print("   - Effects: Time-based Brightness, Contrast, Blur, Saturation with Easing")
 print("   - Transitions: Fade, Zoom, Slide, Wipe, Dissolve at Cut Points")
-print("   - NEW: Video Segmenter - Split videos by time with dual outputs")
-print("   - NEW: Mask Composite - Color-based video compositing with thresholding")
-print("   - NEW: Professional Overlay System - Alpha channel, RGBA, Full/BBox modes")
-print("   - NEW: Chroma Key - Green screen removal with edge softening")
-print("   - NEW: Opacity Gradients - Linear, radial, corner, edge gradient masks")
-print("   - NEW: Resize Toolkit - Center crop, fill, stretch with alpha preservation")
+print("   - Video Segmenter - Split videos by time with dual outputs")
+print("   - Mask Composite - Color-based video compositing with thresholding")
+print("   - Professional Overlay System - Alpha channel, RGBA, Full/BBox modes")
+print("   - Chroma Key - Green screen removal with edge softening")
+print("   - Opacity Gradients - Linear, radial, corner, edge gradient masks")
+print("   - Resize Toolkit - Center crop, fill, stretch with alpha preservation")
+print("")
+print("📝 Professional Text Generation System")
+print("   - Text Generator: 512x512 PIL-based text images with 100+ fonts")
+print("   - Whisper Captions: AI-powered transcription with word-level timing")
+print("   - Text Effects: Shadows, glows, borders, gradients, opacity maps")
+print("   - Text Animator: 15+ motion effects with easing functions")
+print("   - Text Sequencer: Timeline control with frame-accurate positioning")
+print("   - Text Compositor: Smart overlay with blend modes & auto-positioning")
+print("   - Text Presets: Industry templates (YouTube, Broadcast, Cinema, Corporate)")
+print("")
+print("🔊 NEW: Modular Audio Processing System")
+print("   - Enhanced Video Upload: Separate audio output for modular workflows")
+print("   - Audio Loader: Standalone audio file support (WAV, MP3, AAC, FLAC)")
+print("   - Whisper Audio: Optimized audio-only transcription without video overhead")
+print("   - Audio Processor: Normalize, resample, trim, fade, amplify operations")
+print("   - Audio Preview: Playable audio files with waveform visualization")
+print("   - Audio Analyzer: Detailed frequency analysis and processing recommendations")
+print("   - Multi-format Support: TorchAudio, Librosa, MoviePy backends")
+print("")
 print("   - Video Formats: MP4, MOV, AVI, WebM, GIF")
 print("   - Upload Support: Drag & Drop, Upload Button")
 print("   - Aspect Ratio: Resize, Pad, Crop, Stretch handling")
