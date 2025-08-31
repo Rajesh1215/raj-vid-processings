@@ -170,6 +170,78 @@ class RajTextGenerator:
                     "step": 0.1,
                     "tooltip": "Fade out duration"
                 }),
+                # Advanced styling options
+                "font_weight": (["normal", "bold", "italic", "bold_italic"], {
+                    "default": "normal",
+                    "tooltip": "Font weight/style"
+                }),
+                "text_border_width": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Text border/stroke width in pixels"
+                }),
+                "text_border_color": ("STRING", {
+                    "default": "#000000",
+                    "tooltip": "Text border/stroke color"
+                }),
+                "shadow_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Enable text shadow"
+                }),
+                "shadow_offset_x": ("INT", {
+                    "default": 2,
+                    "min": -20,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Shadow X offset"
+                }),
+                "shadow_offset_y": ("INT", {
+                    "default": 2,
+                    "min": -20,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Shadow Y offset"
+                }),
+                "shadow_color": ("STRING", {
+                    "default": "#000000",
+                    "tooltip": "Shadow color"
+                }),
+                "shadow_blur": ("INT", {
+                    "default": 2,
+                    "min": 0,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Shadow blur radius"
+                }),
+                "text_bg_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Enable text background highlight"
+                }),
+                "text_bg_color": ("STRING", {
+                    "default": "#FFFF00",
+                    "tooltip": "Text background/highlight color"
+                }),
+                "text_bg_padding": ("INT", {
+                    "default": 5,
+                    "min": 0,
+                    "max": 50,
+                    "step": 1,
+                    "tooltip": "Text background padding"
+                }),
+                "gradient_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Enable gradient text"
+                }),
+                "gradient_color2": ("STRING", {
+                    "default": "#FF0000",
+                    "tooltip": "Gradient end color"
+                }),
+                "gradient_direction": (["vertical", "horizontal", "diagonal"], {
+                    "default": "vertical",
+                    "tooltip": "Gradient direction"
+                }),
             }
         }
     
@@ -347,6 +419,35 @@ class RajTextGenerator:
         
         return font
     
+    @classmethod
+    def get_font_with_style(cls, font_name: str, font_size: int, font_weight: str, font_file: str = "") -> ImageFont:
+        """Get font with specific weight/style."""
+        # Try custom font file first
+        if font_file:
+            return cls.get_font(font_name, font_size, font_file)
+        
+        # Map font weights to actual font names
+        weight_variants = {
+            "normal": [font_name, f"{font_name} Regular", f"{font_name}-Regular"],
+            "bold": [f"{font_name} Bold", f"{font_name}-Bold", f"{font_name}Bold"],
+            "italic": [f"{font_name} Italic", f"{font_name}-Italic", f"{font_name}Italic"],
+            "bold_italic": [f"{font_name} Bold Italic", f"{font_name}-BoldItalic", f"{font_name}BoldItalic"]
+        }
+        
+        # Try specific weight variant first
+        if font_weight in weight_variants:
+            for variant in weight_variants[font_weight]:
+                font = cls.get_font(variant, font_size)
+                if font and cls.validate_font(font, variant, font_size):
+                    return font
+        
+        # Fallback to normal font if specific weight not found
+        font = cls.get_font(font_name, font_size)
+        if font_weight != "normal":
+            logger.info(f"Font weight '{font_weight}' not found for {font_name}, using normal")
+        
+        return font
+    
     @staticmethod
     def parse_color(color_str: str) -> Tuple[int, int, int, int]:
         """Parse color string to RGBA tuple."""
@@ -372,6 +473,86 @@ class RajTextGenerator:
         
         # Default to white
         return (255, 255, 255, 255)
+    
+    @staticmethod
+    def create_gradient_image(width: int, height: int, color1: Tuple[int, int, int, int], 
+                            color2: Tuple[int, int, int, int], direction: str) -> Image:
+        """Create a gradient image."""
+        gradient = Image.new('RGBA', (width, height))
+        
+        for i in range(width if direction == "horizontal" else height):
+            if direction == "horizontal":
+                ratio = i / width
+                for j in range(height):
+                    color = tuple(int(color1[k] + (color2[k] - color1[k]) * ratio) for k in range(4))
+                    gradient.putpixel((i, j), color)
+            elif direction == "vertical":
+                ratio = i / height
+                for j in range(width):
+                    color = tuple(int(color1[k] + (color2[k] - color1[k]) * ratio) for k in range(4))
+                    gradient.putpixel((j, i), color)
+            else:  # diagonal
+                for j in range(width):
+                    diag_ratio = (j + i) / (width + height - 2)
+                    color = tuple(int(color1[k] + (color2[k] - color1[k]) * diag_ratio) for k in range(4))
+                    gradient.putpixel((j, i), color)
+        
+        return gradient
+    
+    def draw_text_with_effects(self, draw, text, font, x, y, base_color, 
+                              border_width=0, border_color=(0,0,0,255),
+                              shadow_enabled=False, shadow_offset_x=2, shadow_offset_y=2,
+                              shadow_color=(0,0,0,255), shadow_blur=2):
+        """Draw text with border and shadow effects."""
+        
+        # Draw shadow first (if enabled)
+        if shadow_enabled:
+            shadow_x = x + shadow_offset_x
+            shadow_y = y + shadow_offset_y
+            
+            if shadow_blur > 0:
+                # Create shadow with blur
+                bbox = font.getbbox(text) if hasattr(font, 'getbbox') else None
+                if bbox:
+                    shadow_width = int(bbox[2] - bbox[0] + shadow_blur * 2)
+                    shadow_height = int(bbox[3] - bbox[1] + shadow_blur * 2)
+                    shadow_img = Image.new('RGBA', (shadow_width, shadow_height), (0, 0, 0, 0))
+                    shadow_draw = ImageDraw.Draw(shadow_img)
+                    shadow_draw.text((shadow_blur, shadow_blur), text, font=font, fill=shadow_color)
+                    
+                    # Apply blur
+                    if shadow_blur > 0:
+                        shadow_img = shadow_img.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
+                    
+                    # Composite shadow
+                    draw._image.paste(shadow_img, (int(shadow_x - shadow_blur), int(shadow_y - shadow_blur)), shadow_img)
+            else:
+                # Simple shadow without blur
+                draw.text((shadow_x, shadow_y), text, font=font, fill=shadow_color)
+        
+        # Draw border/stroke (if enabled)
+        if border_width > 0:
+            # Draw text outline by drawing text multiple times around the main position
+            for dx in range(-border_width, border_width + 1):
+                for dy in range(-border_width, border_width + 1):
+                    if dx != 0 or dy != 0:
+                        draw.text((x + dx, y + dy), text, font=font, fill=border_color)
+        
+        # Draw main text
+        draw.text((x, y), text, font=font, fill=base_color)
+    
+    def draw_text_background(self, draw, text, font, x, y, bg_color, padding):
+        """Draw text background highlight."""
+        bbox = font.getbbox(text) if hasattr(font, 'getbbox') else None
+        if bbox:
+            # Calculate background rectangle
+            bg_x1 = x + bbox[0] - padding
+            bg_y1 = y + bbox[1] - padding
+            bg_x2 = x + bbox[2] + padding
+            bg_y2 = y + bbox[3] + padding
+            
+            # Draw background rectangle
+            draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=bg_color)
     
     @staticmethod
     def wrap_text(text: str, font: ImageFont, max_width: int, words_per_line: int = 0) -> List[str]:
@@ -405,7 +586,12 @@ class RajTextGenerator:
                      font_color, background_color, text_align, vertical_align,
                      words_per_line, max_lines, line_spacing, letter_spacing,
                      margin_x, margin_y, auto_size, base_opacity,
-                     font_file="", time_display=0.0, fade_in=0.0, fade_out=0.0):
+                     font_file="", time_display=0.0, fade_in=0.0, fade_out=0.0,
+                     font_weight="normal", text_border_width=0, text_border_color="#000000",
+                     shadow_enabled=False, shadow_offset_x=2, shadow_offset_y=2,
+                     shadow_color="#000000", shadow_blur=2, text_bg_enabled=False,
+                     text_bg_color="#FFFF00", text_bg_padding=5, gradient_enabled=False,
+                     gradient_color2="#FF0000", gradient_direction="vertical"):
         
         # Parse colors
         text_color = self.parse_color(font_color)
@@ -419,7 +605,13 @@ class RajTextGenerator:
         draw = ImageDraw.Draw(image)
         
         # Get font
-        font = self.get_font(font_name, font_size, font_file)
+        # Parse additional colors
+        border_color = self.parse_color(text_border_color)
+        shadow_color_parsed = self.parse_color(shadow_color)
+        text_bg_color_parsed = self.parse_color(text_bg_color)
+        gradient_color2_parsed = self.parse_color(gradient_color2)
+        
+        font = self.get_font_with_style(font_name, font_size, font_weight, font_file)
         if not font:
             logger.error(f"Could not load font: {font_name}")
             font = ImageFont.load_default()
@@ -433,7 +625,7 @@ class RajTextGenerator:
             # Start with large size and reduce until text fits
             test_size = min(output_height // 2, 200)
             while test_size > 8:
-                test_font = self.get_font(font_name, test_size, font_file)
+                test_font = self.get_font_with_style(font_name, test_size, font_weight, font_file)
                 lines = self.wrap_text(text, test_font, available_width, words_per_line)
                 
                 # Calculate total height using actual font metrics
@@ -483,7 +675,14 @@ class RajTextGenerator:
         else:  # middle
             y = (output_height - total_height) // 2
         
-        # Draw each line with improved positioning
+        # Handle gradient text color
+        if gradient_enabled:
+            # Create gradient mask
+            gradient_img = self.create_gradient_image(output_width, output_height, 
+                                                   text_color, gradient_color2_parsed, gradient_direction)
+            # We'll apply this later by masking
+            
+        # Draw each line with improved positioning and effects
         for line in lines:
             # Get line width with proper metrics
             bbox = font.getbbox(line) if hasattr(font, 'getbbox') else None
@@ -507,20 +706,65 @@ class RajTextGenerator:
                 x = margin_x
                 # TODO: Implement justify by adjusting word spacing
             
+            # Draw text background if enabled
+            if text_bg_enabled:
+                self.draw_text_background(draw, line, font, x + x_offset, y, 
+                                        text_bg_color_parsed, text_bg_padding)
+            
+            # Choose text color (gradient or solid)
+            final_text_color = text_color
+            
             # Apply letter spacing if needed
             if letter_spacing != 0:
-                # Draw each character separately with spacing
+                # Draw each character separately with spacing and effects
                 char_x = x + x_offset
                 for char in line:
-                    draw.text((char_x, y), char, font=font, fill=text_color)
+                    self.draw_text_with_effects(draw, char, font, char_x, y, final_text_color,
+                                              text_border_width, border_color,
+                                              shadow_enabled, shadow_offset_x, shadow_offset_y,
+                                              shadow_color_parsed, shadow_blur)
                     char_bbox = font.getbbox(char) if hasattr(font, 'getbbox') else None
                     char_width = char_bbox[2] - char_bbox[0] if char_bbox else font_size * 0.6
                     char_x += char_width + letter_spacing
             else:
-                # Draw the entire line with offset
-                draw.text((x + x_offset, y), line, font=font, fill=text_color)
+                # Draw the entire line with effects
+                self.draw_text_with_effects(draw, line, font, x + x_offset, y, final_text_color,
+                                          text_border_width, border_color,
+                                          shadow_enabled, shadow_offset_x, shadow_offset_y,
+                                          shadow_color_parsed, shadow_blur)
             
             y += line_height
+        
+        # Apply gradient text if enabled
+        if gradient_enabled:
+            # Create a text mask
+            text_mask = Image.new('L', (output_width, output_height), 0)
+            mask_draw = ImageDraw.Draw(text_mask)
+            
+            # Draw text on mask
+            y = (output_height - total_height) // 2 if vertical_align == "middle" else margin_y
+            for line in lines:
+                bbox = font.getbbox(line) if hasattr(font, 'getbbox') else None
+                line_width = bbox[2] - bbox[0] if bbox else len(line) * (font_size * 0.6)
+                x_offset = -bbox[0] if bbox and bbox[0] < 0 else 0
+                
+                if text_align == "center":
+                    x = (output_width - line_width) // 2
+                elif text_align == "right":
+                    x = output_width - margin_x - line_width
+                else:
+                    x = margin_x
+                
+                mask_draw.text((x + x_offset, y), line, font=font, fill=255)
+                y += line_height
+            
+            # Apply gradient using mask
+            gradient_img = self.create_gradient_image(output_width, output_height, 
+                                                   text_color, gradient_color2_parsed, gradient_direction)
+            
+            # Clear existing text and apply gradient
+            image = Image.new('RGBA', (output_width, output_height), bg_color)
+            image = Image.composite(gradient_img, image, text_mask)
         
         # Create alpha mask from the alpha channel
         alpha_mask = image.split()[3]
@@ -538,6 +782,7 @@ class RajTextGenerator:
             "text": text,
             "font_name": font_name,
             "font_size": font_size,
+            "font_weight": font_weight,
             "font_color": font_color,
             "background_color": background_color,
             "text_align": text_align,
@@ -553,6 +798,11 @@ class RajTextGenerator:
             "time_display": time_display,
             "fade_in": fade_in,
             "fade_out": fade_out,
+            "text_border_width": text_border_width,
+            "text_border_color": text_border_color,
+            "shadow_enabled": shadow_enabled,
+            "text_bg_enabled": text_bg_enabled,
+            "gradient_enabled": gradient_enabled,
             "output_width": output_width,
             "output_height": output_height,
             "actual_lines": len(lines),
