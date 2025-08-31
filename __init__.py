@@ -27,7 +27,7 @@ try:
     from .nodes.text_compositor import RajTextCompositor
     from .nodes.text_presets import RajTextPresets
     # Audio Processing Nodes
-    from .nodes.whisper_audio import RajWhisperAudio
+    from .nodes.whisper_process import RajWhisperProcess
     from .nodes.audio_loader import RajAudioLoader, RajAudioProcessor
     from .nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
 except ImportError:
@@ -53,7 +53,7 @@ except ImportError:
     from nodes.text_compositor import RajTextCompositor
     from nodes.text_presets import RajTextPresets
     # Audio Processing Nodes
-    from nodes.whisper_audio import RajWhisperAudio
+    from nodes.whisper_process import RajWhisperProcess
     from nodes.audio_loader import RajAudioLoader, RajAudioProcessor
     from nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
 
@@ -86,7 +86,7 @@ NODE_CLASS_MAPPINGS = {
     "RajTextCompositor": RajTextCompositor,
     "RajTextPresets": RajTextPresets,
     # Audio Processing Nodes
-    "RajWhisperAudio": RajWhisperAudio,
+    "RajWhisperProcess": RajWhisperProcess,
     "RajAudioLoader": RajAudioLoader,
     "RajAudioProcessor": RajAudioProcessor,
     "RajAudioPreview": RajAudioPreview,
@@ -122,7 +122,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajTextCompositor": "🎬 Raj Text Compositor",
     "RajTextPresets": "📋 Raj Text Presets",
     # Audio Processing Nodes
-    "RajWhisperAudio": "🎙️ Raj Whisper Audio",
+    "RajWhisperProcess": "🎙️ Raj Whisper Process",
     "RajAudioLoader": "🔊 Raj Audio Loader",
     "RajAudioProcessor": "🎚️ Raj Audio Processor",
     "RajAudioPreview": "🎵 Raj Audio Preview",
@@ -171,7 +171,7 @@ print("")
 print("🔊 NEW: Modular Audio Processing System")
 print("   - Enhanced Video Upload: Separate audio output for modular workflows")
 print("   - Audio Loader: Standalone audio file support (WAV, MP3, AAC, FLAC)")
-print("   - Whisper Audio: Optimized audio-only transcription without video overhead")
+print("   - Whisper Process: Advanced transcription with sentence & word-level captions")
 print("   - Audio Processor: Normalize, resample, trim, fade, amplify operations")
 print("   - Audio Preview: Playable audio files with waveform visualization")
 print("   - Audio Analyzer: Detailed frequency analysis and processing recommendations")
