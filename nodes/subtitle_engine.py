@@ -966,7 +966,30 @@ class RajSubtitleEngine:
                                              highlight_settings: Dict,
                                              output_width: int,
                                              output_height: int) -> np.ndarray:
-        """Render text with dynamic word-level highlighting in a single pass."""
+        """Render text with dynamic word-level highlighting in a single pass.
+        
+        Enhanced features:
+        - Full font weight support (normal, bold, italic, bold_italic) for highlighted words
+        - Custom margin control via highlight_settings.layout_config:
+          * margin_width: Additional horizontal spacing around highlighted words
+          * margin_height: Additional vertical spacing around highlighted words
+          * margin_x/margin_y: Override base margins completely
+        - Automatic fallback to base settings when highlight settings are incomplete
+        
+        Example highlight_settings:
+        {
+            'font_config': {
+                'font_name': 'Arial',
+                'font_size': 28,        # Larger size for highlights
+                'font_weight': 'bold',  # Bold highlighting
+                'color': '#0066FF'
+            },
+            'layout_config': {
+                'margin_width': 5,      # Extra horizontal spacing for highlights
+                'margin_height': 3      # Extra vertical spacing for highlights
+            }
+        }
+        """
         
         logger.debug(f"Dynamic rendering: {len(all_words)} words, highlighted='{highlighted_word.get('word', '') if highlighted_word else None}'")
         
@@ -996,14 +1019,19 @@ class RajSubtitleEngine:
             image = Image.new('RGB', (output_width, output_height), bg_rgb)
             draw = ImageDraw.Draw(image)
             
-            # Load fonts
+            # Load fonts with proper weight support
             font_name = font_config.get('font_name', 'Arial')
             font_size = font_config.get('font_size', 20)
-            highlight_font_size = highlight_font_config.get('font_size', font_size)
+            font_weight = font_config.get('font_weight', 'normal')
             
-            # Get system font
-            base_font = self._load_system_font(font_name, font_size)
-            highlight_font = self._load_system_font(font_name, highlight_font_size)
+            # Get highlight font properties
+            highlight_font_name = highlight_font_config.get('font_name', font_name)
+            highlight_font_size = highlight_font_config.get('font_size', font_size)
+            highlight_font_weight = highlight_font_config.get('font_weight', font_weight)
+            
+            # Load fonts with style support using text generator
+            base_font = self.text_generator.get_font_with_style(font_name, font_size, font_weight)
+            highlight_font = self.text_generator.get_font_with_style(highlight_font_name, highlight_font_size, highlight_font_weight)
             
             # Parse colors
             base_rgb = self._parse_color(base_color)
@@ -1020,11 +1048,19 @@ class RajSubtitleEngine:
             
             logger.debug(f"Highlighted word index: {highlighted_index}, word: '{highlighted_word.get('word', '') if highlighted_word else None}'")
             
-            # Layout configuration
+            # Layout configuration - use highlight margins if available
+            highlight_layout_config = highlight_settings.get('layout_config', {})
             text_align = layout_config.get('alignment', 'center')
-            margin_x = layout_config.get('margin_x', 10)
-            margin_y = layout_config.get('margin_y', 10)
+            
+            # Use highlight-specific margins if provided, fallback to base margins
+            margin_x = highlight_layout_config.get('margin_x', layout_config.get('margin_x', 10))
+            margin_y = highlight_layout_config.get('margin_y', layout_config.get('margin_y', 10))
+            margin_width = highlight_layout_config.get('margin_width', margin_x)  # Additional margin width for highlights
+            margin_height = highlight_layout_config.get('margin_height', margin_y)  # Additional margin height for highlights
+            
             line_spacing = layout_config.get('line_spacing', 1.2)
+            
+            logger.debug(f"Using margins - base: ({margin_x}, {margin_y}), highlight extra: ({margin_width}, {margin_height})")
             
             # Calculate line height
             line_height = int(font_size * line_spacing)
@@ -1079,12 +1115,18 @@ class RajSubtitleEngine:
                     if is_highlighted:
                         word_font = highlight_font
                         word_color = highlight_rgb
+                        # Apply additional margins for highlighted words for better spacing
+                        word_x = current_x + margin_width
+                        word_y = y_pos - margin_height
+                        logger.debug(f"Applying highlight margins: word '{word}' at ({word_x}, {word_y}) with margins (+{margin_width}, -{margin_height})")
                     else:
                         word_font = base_font
                         word_color = base_rgb
+                        word_x = current_x
+                        word_y = y_pos
                     
                     # Draw the word
-                    draw.text((current_x, y_pos), word, font=word_font, fill=word_color)
+                    draw.text((word_x, word_y), word, font=word_font, fill=word_color)
                     
                     # Move to next word position
                     word_width = draw.textbbox((0, 0), word + " ", font=word_font)[2]
