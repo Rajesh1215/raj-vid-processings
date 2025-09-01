@@ -260,6 +260,8 @@ class RajSubtitleEngine:
         output_width = final_width
         output_height = final_height
         
+        logger.info(f"Frame generation will use dimensions: {output_width}x{output_height}")
+        
         for frame_num in range(total_frames):
             current_time = frame_num / video_fps
             
@@ -330,11 +332,25 @@ class RajSubtitleEngine:
         
         # Convert frames to image batch tensor
         if frames:
-            # Apply standardization to ensure all frames have same format
+            # Apply standardization to ensure all frames have same format and dimensions
             standardized_frames = []
-            for frame in frames:
-                standardized_frame = self._standardize_frame_format(frame)
+            for i, frame in enumerate(frames):
+                standardized_frame = self._standardize_frame_format(frame, output_width, output_height)
                 standardized_frames.append(standardized_frame)
+                
+                # Log frame dimensions for debugging
+                if i % 50 == 0 or i < 5 or i >= len(frames) - 5:  # Log first 5, every 50th, and last 5
+                    logger.debug(f"Frame {i} dimensions: {standardized_frame.shape}")
+            
+            # Validate all frames have consistent dimensions before stacking
+            if standardized_frames:
+                expected_shape = standardized_frames[0].shape
+                for i, frame in enumerate(standardized_frames):
+                    if frame.shape != expected_shape:
+                        logger.error(f"Frame {i} shape mismatch: {frame.shape} vs expected {expected_shape}")
+                        raise ValueError(f"Frame dimension inconsistency detected at frame {i}: {frame.shape} vs {expected_shape}")
+                
+                logger.info(f"All {len(standardized_frames)} frames verified to have consistent shape: {expected_shape}")
             
             # Stack all frames into image batch tensor [num_frames, height, width, channels]
             # Convert to float32 and normalize to 0-1 range for ComfyUI compatibility
@@ -750,7 +766,7 @@ class RajSubtitleEngine:
         
         # No highlighting, use standard rendering
         logger.debug(f"Frame {current_time:.2f}s: using standard rendering (no highlighting)")
-        return self._render_text_with_settings(full_text, base_settings)
+        return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
     
     def _generate_frame_with_line_groups(self,
                                        active_line_groups: List[Dict],
@@ -796,7 +812,7 @@ class RajSubtitleEngine:
                 )
         
         # No highlighting, use standard rendering
-        return self._render_text_with_settings(full_text, base_settings)
+        return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
     
     def _generate_frame_with_area_groups(self,
                                        active_area_groups: List[Dict],
@@ -840,7 +856,7 @@ class RajSubtitleEngine:
                 )
         
         # No highlighting, use standard rendering
-        return self._render_text_with_settings(full_text, base_settings)
+        return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
     
     def _generate_frame_with_words(self,
                                  active_words: List[Dict],
@@ -866,7 +882,7 @@ class RajSubtitleEngine:
             return self._generate_empty_frame(output_width, output_height, base_settings)
         
         # Generate base subtitle frame using text generator
-        base_frame = self._render_text_with_settings(full_text, base_settings)
+        base_frame = self._render_text_with_settings(full_text, base_settings, output_width, output_height)
         
         # Add word highlighting if enabled
         if highlight_settings:
@@ -885,8 +901,9 @@ class RajSubtitleEngine:
         
         return base_frame
     
-    def _standardize_frame_format(self, frame: np.ndarray) -> np.ndarray:
-        """Ensure frame is RGB format with consistent shape."""
+    def _standardize_frame_format(self, frame: np.ndarray, expected_width: int = None, expected_height: int = None) -> np.ndarray:
+        """Ensure frame is RGB format with consistent shape and dimensions."""
+        # Handle channel conversion
         if len(frame.shape) == 3:
             if frame.shape[2] == 4:  # RGBA → RGB
                 frame = frame[:, :, :3]
@@ -895,9 +912,21 @@ class RajSubtitleEngine:
         elif len(frame.shape) == 2:  # Grayscale → RGB
             frame = np.stack([frame] * 3, axis=-1)
         
+        # Validate and fix dimensions if expected dimensions provided
+        if expected_width is not None and expected_height is not None:
+            current_height, current_width = frame.shape[:2]
+            if current_height != expected_height or current_width != expected_width:
+                logger.warning(f"Frame dimension mismatch: got {current_width}x{current_height}, expected {expected_width}x{expected_height}")
+                # Resize frame to match expected dimensions
+                from PIL import Image
+                frame_pil = Image.fromarray(frame.astype(np.uint8))
+                frame_pil = frame_pil.resize((expected_width, expected_height), Image.LANCZOS)
+                frame = np.array(frame_pil)
+                logger.info(f"Resized frame to {expected_width}x{expected_height}")
+        
         return frame.astype(np.uint8)
     
-    def _render_text_with_settings(self, text: str, settings: Dict) -> np.ndarray:
+    def _render_text_with_settings(self, text: str, settings: Dict, output_width: int = None, output_height: int = None) -> np.ndarray:
         """Render text using the text generator with given settings."""
         try:
             # Extract all parameters from settings
@@ -907,11 +936,17 @@ class RajSubtitleEngine:
             container_config = settings.get('container_config', {})
             output_config = settings.get('output_config', {})
             
+            # Use explicit dimensions if provided, otherwise fall back to settings
+            final_width = output_width if output_width is not None else output_config.get('output_width', 512)
+            final_height = output_height if output_height is not None else output_config.get('output_height', 256)
+            
+            logger.debug(f"_render_text_with_settings using dimensions: {final_width}x{final_height} (explicit: {output_width is not None})")
+            
             # Call the text generator
             result = self.text_generator.generate_text(
                 text=text,
-                output_width=output_config.get('output_width', 512),
-                output_height=output_config.get('output_height', 256),
+                output_width=final_width,
+                output_height=final_height,
                 font_name=font_config.get('font_name', 'Arial'),
                 font_size=font_config.get('font_size', 36),
                 font_color=font_config.get('font_color', '#FFFFFF'),
@@ -953,17 +988,17 @@ class RajSubtitleEngine:
             image_tensor = result[0]  # First return value is the image
             image_array = (image_tensor[0].cpu().numpy() * 255).astype(np.uint8)
             
-            # Standardize to RGB format
-            image_array = self._standardize_frame_format(image_array)
+            # Standardize to RGB format and validate dimensions
+            image_array = self._standardize_frame_format(image_array, final_width, final_height)
             
             return image_array
             
         except Exception as e:
             logger.error(f"Error rendering text with settings: {e}")
-            # Return empty frame as fallback
-            output_width = settings.get('output_config', {}).get('output_width', 512)
-            output_height = settings.get('output_config', {}).get('output_height', 256)
-            return self._generate_empty_frame(output_width, output_height, settings)
+            # Return empty frame as fallback using the same dimension logic
+            fallback_width = output_width if output_width is not None else settings.get('output_config', {}).get('output_width', 512)
+            fallback_height = output_height if output_height is not None else settings.get('output_config', {}).get('output_height', 256)
+            return self._generate_empty_frame(fallback_width, fallback_height, settings)
     
     def _render_mixed_text_with_highlighting(self,
                                            full_text: str,
@@ -981,7 +1016,7 @@ class RajSubtitleEngine:
         if not highlighted_word:
             # No highlighting needed, use standard rendering
             logger.debug("No highlighted word, falling back to standard rendering")
-            return self._render_text_with_settings(full_text, base_settings)
+            return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
         
         try:
             # Use dynamic rendering for clean highlighting without duplication
@@ -1003,7 +1038,7 @@ class RajSubtitleEngine:
         except Exception as e:
             logger.warning(f"Error in mixed text highlighting: {e}")
             # Fallback to base rendering
-            return self._render_text_with_settings(full_text, base_settings)
+            return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
     
     def _render_text_with_dynamic_highlighting(self,
                                              full_text: str,
@@ -1182,12 +1217,12 @@ class RajSubtitleEngine:
             
             # Convert to numpy array
             result_array = np.array(image)
-            return self._standardize_frame_format(result_array)
+            return self._standardize_frame_format(result_array, output_width, output_height)
             
         except Exception as e:
             logger.error(f"Error in dynamic highlighting: {e}")
             # Fallback to base rendering
-            return self._render_text_with_settings(full_text, base_settings)
+            return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
     
     def _load_system_font(self, font_name: str, font_size: int) -> ImageFont.FreeTypeFont:
         """Load a system font or return default."""
