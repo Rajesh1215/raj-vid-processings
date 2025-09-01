@@ -17,6 +17,8 @@ from .subtitle_utils import (
     detect_sentence_boundaries,
     organize_words_into_display_lines,
     create_timing_windows,
+    create_word_groups,
+    create_timing_windows_grouped,
     validate_word_timing_data
 )
 from .text_generator import RajTextGenerator
@@ -50,35 +52,11 @@ class RajSubtitleEngine:
                 "highlight_settings": ("TEXT_SETTINGS", {
                     "tooltip": "Word highlight styling (leave empty for no highlighting)"
                 }),
-                "sentence_tolerance": ("INT", {
-                    "default": 1,
-                    "min": 0,
-                    "max": 3,
-                    "tooltip": "Allow +/- words per line for complete sentences"
-                }),
-                "word_tolerance": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 2,
-                    "tooltip": "Allow +/- words for optimal word positioning"
-                }),
-                "auto_fit": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Automatically optimize sentence breaks"
-                }),
-                "lead_time": ("FLOAT", {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 2.0,
-                    "step": 0.1,
-                    "tooltip": "Show text this many seconds early"
-                }),
-                "trail_time": ("FLOAT", {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 2.0,
-                    "step": 0.1,
-                    "tooltip": "Keep text visible this many seconds after"
+                "max_lines": ("INT", {
+                    "default": 2,
+                    "min": 1,
+                    "max": 5,
+                    "tooltip": "Maximum number of lines to display at once"
                 })
             }
         }
@@ -96,23 +74,16 @@ class RajSubtitleEngine:
                               base_settings: Dict,
                               video_fps: float,
                               highlight_settings: Optional[Dict] = None,
-                              sentence_tolerance: int = 1,
-                              word_tolerance: int = 0,
-                              auto_fit: bool = True,
-                              lead_time: float = 0.0,
-                              trail_time: float = 0.0) -> Tuple[torch.Tensor, int, str, Dict]:
+                              max_lines: int = 2) -> Tuple[torch.Tensor, int, str, Dict]:
         """
-        Generate subtitle video frames with precise word timing.
+        Generate subtitle video frames with automatic word grouping based on font size and available space.
         
         Args:
             word_timings: Word timing data from RajWhisperProcess
-            base_settings: Main subtitle styling settings
+            base_settings: Main subtitle styling settings (includes dimensions and font config)
             video_fps: Video frame rate
             highlight_settings: Optional word highlighting settings
-            sentence_tolerance: Flexibility for complete sentences
-            auto_fit: Auto-optimize sentence breaks
-            lead_time: Show text early (seconds)
-            trail_time: Keep text visible after (seconds)
+            max_lines: Maximum lines to display simultaneously
             
         Returns:
             Tuple of (video_frames_tensor, total_frames, timing_info, metadata)
@@ -136,8 +107,31 @@ class RajSubtitleEngine:
         
         logger.info(f"Generating {total_frames} frames for {total_duration:.2f}s duration")
         
-        # Create timing windows for all frames
-        timing_windows = create_timing_windows(parsed_words, video_fps, lead_time, trail_time)
+        # Get dimensions from base_settings output_config (where text generator stores them)
+        output_config = base_settings.get('output_config', {})
+        display_width = output_config.get('output_width', 512)
+        display_height = output_config.get('output_height', 256)
+        
+        # Get font and layout configuration
+        font_config = base_settings.get('font_config', {})
+        layout_config = base_settings.get('layout_config', {})
+        margin_x = layout_config.get('margin_x', 20)
+        
+        logger.info(f"Using dimensions from settings: {display_width}x{display_height}")
+        
+        # Always create word groups based on available space and font size
+        word_groups = create_word_groups(
+            parsed_words, 
+            display_width, 
+            font_config, 
+            max_lines, 
+            margin_x
+        )
+        
+        logger.info(f"Created {len(word_groups)} word groups for auto-fit display")
+        
+        # Create timing windows for grouped words
+        timing_windows = create_timing_windows_grouped(word_groups, video_fps, max_lines)
         
         # Detect sentences for better organization
         sentences = detect_sentence_boundaries(parsed_words)
@@ -146,26 +140,23 @@ class RajSubtitleEngine:
         frames = []
         frame_metadata = {"frames": []}
         
-        # Get dimensions from base settings
-        output_width = base_settings.get('output_config', {}).get('output_width', 512)
-        output_height = base_settings.get('output_config', {}).get('output_height', 256)
+        # Use the dimensions we already extracted
+        output_width = display_width
+        output_height = display_height
         
         for frame_num in range(total_frames):
             current_time = frame_num / video_fps
             
-            # Get active words for this frame
-            active_words = timing_windows.get(frame_num, [])
+            # Get active word groups for this frame
+            active_groups = timing_windows.get(frame_num, [])
             
             # Generate subtitle frame
-            if active_words:
-                frame = self._generate_frame_with_words(
-                    active_words, 
+            if active_groups:
+                frame = self._generate_frame_with_groups(
+                    active_groups,  # word groups
                     current_time,
-                    base_settings, 
+                    base_settings,
                     highlight_settings,
-                    sentence_tolerance,
-                    word_tolerance,
-                    auto_fit,
                     output_width,
                     output_height
                 )
@@ -176,16 +167,11 @@ class RajSubtitleEngine:
             frames.append(frame)
             
             # Store metadata
-            highlighted_word = None
-            if highlight_settings and active_words:
-                highlighted_word = get_current_highlighted_word(active_words, current_time)
-            
             frame_metadata["frames"].append({
                 "frame": frame_num,
                 "time": current_time,
-                "active_words_count": len(active_words),
-                "highlighted_word": highlighted_word['word'] if highlighted_word else None,
-                "words_text": [w['word'] for w in active_words]
+                "active_groups_count": len(active_groups),
+                "groups_text": [g['text'] for g in active_groups] if active_groups else []
             })
             
             # Progress logging every 10% of frames
@@ -221,34 +207,63 @@ class RajSubtitleEngine:
             "video_fps": video_fps,
             "total_words": len(parsed_words),
             "total_sentences": len(sentences),
-            "highlighting_enabled": highlight_settings is not None
+            "highlighting_enabled": highlight_settings is not None,
+            "word_groups": len(word_groups),
+            "max_lines": max_lines,
+            "display_width": display_width,
+            "display_height": display_height
         })
         
         logger.info(f"Successfully generated subtitle images: {total_frames} frames, {total_duration:.2f}s")
         
         return (frames_tensor, total_frames, timing_info, frame_metadata)
     
+    def _generate_frame_with_groups(self,
+                                  active_groups: List[Dict],
+                                  current_time: float,
+                                  base_settings: Dict,
+                                  highlight_settings: Optional[Dict],
+                                  output_width: int,
+                                  output_height: int) -> np.ndarray:
+        """Generate a single frame with word groups."""
+        
+        # Create text lines from active groups
+        text_lines = []
+        all_words = []
+        
+        for group in active_groups:
+            text_lines.append(group['text'])
+            all_words.extend(group['words'])
+        
+        full_text = '\n'.join(text_lines)
+        
+        if not full_text.strip():
+            return self._generate_empty_frame(output_width, output_height, base_settings)
+        
+        # Generate base subtitle frame using text generator
+        base_frame = self._render_text_with_settings(full_text, base_settings)
+        
+        # Add word highlighting if enabled
+        if highlight_settings and all_words:
+            highlighted_word = get_current_highlighted_word(all_words, current_time)
+            if highlighted_word:
+                # For now, skip complex highlighting in grouped mode
+                # This could be enhanced later to highlight within groups
+                pass
+        
+        return base_frame
+    
     def _generate_frame_with_words(self,
                                  active_words: List[Dict],
                                  current_time: float,
                                  base_settings: Dict,
                                  highlight_settings: Optional[Dict],
-                                 sentence_tolerance: int,
-                                 word_tolerance: int,
-                                 auto_fit: bool,
                                  output_width: int,
                                  output_height: int) -> np.ndarray:
         """Generate a single frame with the given words."""
         
-        # Organize words into display lines
-        word_lines = organize_words_into_display_lines(
-            active_words,
-            base_settings.get('layout_config', {}).get('words_per_line', 0),
-            base_settings.get('layout_config', {}).get('max_lines', 0),
-            sentence_tolerance,
-            word_tolerance,
-            auto_fit
-        )
+        # Simple organization for legacy mode (one word at a time)
+        word_lines = [[word] for word in active_words]
         
         # Create base text for the frame
         text_lines = []

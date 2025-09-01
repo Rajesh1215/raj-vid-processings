@@ -4,7 +4,9 @@ Used by RajSubtitleEngine and related nodes.
 """
 
 import re
+import os
 from typing import List, Dict, Tuple, Optional, Any
+from PIL import Image, ImageDraw, ImageFont
 from .utils import logger
 
 
@@ -551,6 +553,278 @@ def calculate_word_positions(words: List[Dict],
         x_offset += max_width + 10  # Add some spacing between words
     
     return positioned_words
+
+
+def calculate_text_width(text: str, font_path: str, font_size: int) -> int:
+    """
+    Calculate the pixel width of text using PIL.
+    
+    Args:
+        text: Text to measure
+        font_path: Path to font file
+        font_size: Font size in points
+        
+    Returns:
+        Width in pixels
+    """
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+        # Create a temporary image for measurement
+        img = Image.new('RGB', (1, 1))
+        draw = ImageDraw.Draw(img)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        width = bbox[2] - bbox[0]
+        return width
+    except Exception as e:
+        logger.warning(f"Could not calculate exact text width: {e}")
+        # Fallback to estimation
+        return len(text) * int(font_size * 0.6)
+
+
+def create_word_groups(word_data: List[Dict],
+                      display_width: int,
+                      font_config: Dict,
+                      max_lines: int = 2,
+                      margin_x: int = 20) -> List[Dict]:
+    """
+    Group consecutive words based on display width constraints.
+    
+    Args:
+        word_data: List of word dictionaries with timing
+        display_width: Available width in pixels
+        font_config: Font configuration dictionary
+        max_lines: Maximum number of lines to display at once
+        margin_x: Horizontal margin on each side
+        
+    Returns:
+        List of word groups, each containing multiple words with combined timing
+    """
+    if not word_data:
+        return []
+    
+    # Extract font settings
+    font_family = font_config.get('font_family', 'Arial')
+    font_size = font_config.get('font_size', 36)
+    font_weight = font_config.get('font_weight', 'normal')
+    
+    # Find font path
+    font_paths = {
+        'Arial': ['/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Helvetica': ['/System/Library/Fonts/Helvetica.ttc', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Times': ['/System/Library/Fonts/Supplemental/Times New Roman.ttf', '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf']
+    }
+    
+    font_path = None
+    for path in font_paths.get(font_family, font_paths['Arial']):
+        if os.path.exists(path):
+            font_path = path
+            break
+    
+    if not font_path:
+        logger.warning(f"Font {font_family} not found, using estimation")
+    
+    # Calculate available width
+    available_width = display_width - (2 * margin_x)
+    
+    # Group words
+    groups = []
+    current_group = []
+    current_width = 0
+    space_width = calculate_text_width(" ", font_path, font_size) if font_path else int(font_size * 0.3)
+    
+    for word in word_data:
+        word_text = word.get('word', '')
+        word_width = calculate_text_width(word_text, font_path, font_size) if font_path else len(word_text) * int(font_size * 0.6)
+        
+        # Check if adding this word would exceed width
+        test_width = current_width + (space_width if current_group else 0) + word_width
+        
+        if test_width > available_width and current_group:
+            # Save current group and start new one
+            groups.append({
+                'words': current_group.copy(),
+                'text': ' '.join(w['word'] for w in current_group),
+                'start_time': current_group[0].get('start_time', current_group[0].get('start', 0)),
+                'end_time': current_group[-1].get('end_time', current_group[-1].get('end', 0)),
+                'word_count': len(current_group)
+            })
+            current_group = [word]
+            current_width = word_width
+        else:
+            # Add word to current group
+            current_group.append(word)
+            current_width = test_width
+    
+    # Add final group
+    if current_group:
+        groups.append({
+            'words': current_group.copy(),
+            'text': ' '.join(w['word'] for w in current_group),
+            'start_time': current_group[0].get('start_time', current_group[0].get('start', 0)),
+            'end_time': current_group[-1].get('end_time', current_group[-1].get('end', 0)),
+            'word_count': len(current_group)
+        })
+    
+    logger.info(f"Created {len(groups)} word groups from {len(word_data)} words")
+    return groups
+
+
+def debug_word_groups(word_data: List[Dict],
+                     display_width: int,
+                     font_config: Dict,
+                     max_lines: int = 2,
+                     margin_x: int = 20,
+                     save_images: bool = True) -> List[Dict]:
+    """
+    Debug word grouping by creating test images for each group.
+    
+    Args:
+        word_data: List of word dictionaries with timing
+        display_width: Available width in pixels
+        font_config: Font configuration dictionary
+        max_lines: Maximum number of lines to display
+        margin_x: Horizontal margin on each side
+        save_images: Whether to save debug images
+        
+    Returns:
+        List of word groups with debug information
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    import tempfile
+    
+    # Create word groups
+    groups = create_word_groups(word_data, display_width, font_config, max_lines, margin_x)
+    
+    # Extract font settings
+    font_family = font_config.get('font_family', 'Arial')
+    font_size = font_config.get('font_size', 36)
+    
+    # Find font path
+    font_paths = {
+        'Arial': ['/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Helvetica': ['/System/Library/Fonts/Helvetica.ttc', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Times': ['/System/Library/Fonts/Supplemental/Times New Roman.ttf', '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf']
+    }
+    
+    font_path = None
+    for path in font_paths.get(font_family, font_paths['Arial']):
+        if os.path.exists(path):
+            font_path = path
+            break
+    
+    available_width = display_width - (2 * margin_x)
+    
+    logger.info(f"\n=== WORD GROUPING DEBUG ===")
+    logger.info(f"Display width: {display_width}px")
+    logger.info(f"Available width: {available_width}px (margin: {margin_x}px each side)")
+    logger.info(f"Font: {font_family} @ {font_size}px")
+    logger.info(f"Font path: {font_path}")
+    
+    debug_info = []
+    
+    for i, group in enumerate(groups):
+        group_text = group['text']
+        
+        # Calculate actual text width
+        if font_path:
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+                img = Image.new('RGB', (1, 1))
+                draw = ImageDraw.Draw(img)
+                bbox = draw.textbbox((0, 0), group_text, font=font)
+                actual_width = bbox[2] - bbox[0]
+                
+                # Create test image if requested
+                if save_images:
+                    # Create image with background and text
+                    test_img = Image.new('RGB', (display_width, 100), color='black')
+                    test_draw = ImageDraw.Draw(test_img)
+                    
+                    # Draw available area boundary
+                    test_draw.rectangle([margin_x, 10, display_width - margin_x, 90], outline='red', width=2)
+                    
+                    # Draw text
+                    text_x = margin_x
+                    text_y = 30
+                    test_draw.text((text_x, text_y), group_text, font=font, fill='white')
+                    
+                    # Save debug image
+                    temp_dir = tempfile.gettempdir()
+                    img_path = os.path.join(temp_dir, f"word_group_{i+1}.png")
+                    test_img.save(img_path)
+                    logger.info(f"Saved debug image: {img_path}")
+                    
+            except Exception as e:
+                logger.warning(f"Could not create debug image for group {i+1}: {e}")
+                actual_width = len(group_text) * int(font_size * 0.6)  # Fallback
+        else:
+            actual_width = len(group_text) * int(font_size * 0.6)  # Fallback
+        
+        # Check if text fits
+        fits = actual_width <= available_width
+        overflow = actual_width - available_width if not fits else 0
+        
+        debug_info.append({
+            'group_num': i + 1,
+            'text': group_text,
+            'word_count': group['word_count'],
+            'actual_width': actual_width,
+            'available_width': available_width,
+            'fits': fits,
+            'overflow_pixels': overflow,
+            'duration': group['end_time'] - group['start_time']
+        })
+        
+        status = "✅ FITS" if fits else f"❌ OVERFLOW ({overflow}px)"
+        logger.info(f'Group {i+1}: "{group_text}" - {actual_width}px {status}')
+    
+    logger.info("=== DEBUG COMPLETE ===\n")
+    
+    return debug_info
+
+
+def create_timing_windows_grouped(word_groups: List[Dict], 
+                                 fps: float,
+                                 max_lines: int = 2) -> Dict[int, List[Dict]]:
+    """
+    Create frame-by-frame timing windows for word groups.
+    Shows entire groups for their full duration.
+    
+    Args:
+        word_groups: List of word groups from create_word_groups
+        fps: Video frame rate
+        max_lines: Maximum lines to display simultaneously
+        
+    Returns:
+        Dictionary mapping frame numbers to lists of word groups to display
+    """
+    if not word_groups:
+        return {}
+    
+    # Calculate total duration
+    total_duration = max(group['end_time'] for group in word_groups)
+    total_frames = int(total_duration * fps) + 1
+    
+    timing_windows = {}
+    
+    for frame_num in range(total_frames):
+        current_time = frame_num / fps
+        
+        # Find groups that should be displayed at this time
+        active_groups = []
+        for group in word_groups:
+            if group['start_time'] <= current_time <= group['end_time']:
+                active_groups.append(group)
+        
+        # Limit to max_lines most recent groups
+        if len(active_groups) > max_lines:
+            # Sort by start time and keep the most recent ones
+            active_groups = sorted(active_groups, key=lambda g: g['start_time'])[-max_lines:]
+        
+        timing_windows[frame_num] = active_groups
+    
+    logger.info(f"Created grouped timing windows for {total_frames} frames at {fps}fps")
+    return timing_windows
 
 
 def create_timing_windows(word_data: List[Dict], 
