@@ -783,6 +783,224 @@ def debug_word_groups(word_data: List[Dict],
     return debug_info
 
 
+def create_area_based_word_groups(word_data: List[Dict],
+                                 box_width: int,
+                                 box_height: int,
+                                 font_config: Dict,
+                                 margin_x: int = 20,
+                                 margin_y: int = 20,
+                                 line_spacing: float = 1.2) -> List[Dict]:
+    """
+    Group words based on available box area instead of fixed line limits.
+    
+    Args:
+        word_data: List of word dictionaries with timing
+        box_width: Available width of the subtitle box in pixels
+        box_height: Available height of the subtitle box in pixels
+        font_config: Font configuration dictionary
+        margin_x: Horizontal margin on each side
+        margin_y: Vertical margin on top and bottom
+        line_spacing: Line spacing multiplier
+        
+    Returns:
+        List of word groups that fit within the box dimensions
+    """
+    if not word_data:
+        return []
+    
+    # Extract font settings
+    font_family = font_config.get('font_family', font_config.get('font_name', 'Arial'))
+    font_size = font_config.get('font_size', 36)
+    font_weight = font_config.get('font_weight', 'normal')
+    
+    # Find font path
+    font_paths = {
+        'Arial': ['/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Helvetica': ['/System/Library/Fonts/Helvetica.ttc', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Times': ['/System/Library/Fonts/Supplemental/Times New Roman.ttf', '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf']
+    }
+    
+    font_path = None
+    for path in font_paths.get(font_family, font_paths['Arial']):
+        if os.path.exists(path):
+            font_path = path
+            break
+    
+    if not font_path:
+        logger.warning(f"Font {font_family} not found, using estimation")
+    
+    # Calculate available dimensions
+    available_width = box_width - (2 * margin_x)
+    available_height = box_height - (2 * margin_y)
+    
+    # Calculate line height with spacing
+    if font_path:
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+            # Create temporary image to measure text
+            temp_img = Image.new('RGB', (1, 1))
+            draw = ImageDraw.Draw(temp_img)
+            # Measure a sample text to get line height
+            bbox = draw.textbbox((0, 0), "Ag", font=font)  # 'Ag' has ascenders and descenders
+            line_height = (bbox[3] - bbox[1]) * line_spacing
+        except Exception as e:
+            logger.warning(f"Could not load font for measurement: {e}")
+            line_height = font_size * line_spacing
+    else:
+        line_height = font_size * line_spacing
+    
+    # Calculate maximum number of lines that fit in the box
+    max_lines_in_box = max(1, int(available_height / line_height))
+    
+    logger.info(f"Box dimensions: {box_width}x{box_height}px, Available: {available_width}x{available_height}px")
+    logger.info(f"Line height: {line_height:.1f}px, Max lines in box: {max_lines_in_box}")
+    
+    # Group words to fit within the box area
+    groups = []
+    current_group_words = []
+    current_lines = []  # List of lines in current group
+    current_line_words = []  # Words in current line
+    current_line_width = 0
+    
+    space_width = calculate_text_width(" ", font_path, font_size) if font_path else int(font_size * 0.3)
+    
+    for word in word_data:
+        word_text = word.get('word', '')
+        word_width = calculate_text_width(word_text, font_path, font_size) if font_path else len(word_text) * int(font_size * 0.6)
+        
+        # Check if adding this word would exceed line width
+        test_width = current_line_width + (space_width if current_line_words else 0) + word_width
+        
+        if test_width > available_width and current_line_words:
+            # Current line is full, move to next line
+            current_lines.append({
+                'words': current_line_words.copy(),
+                'text': ' '.join(w['word'] for w in current_line_words),
+                'width': current_line_width
+            })
+            current_line_words = [word]
+            current_line_width = word_width
+            
+            # Check if we've reached the maximum lines for this group
+            if len(current_lines) >= max_lines_in_box:
+                # Create a group with current lines
+                group_start = min(w['start_time'] for line in current_lines for w in line['words'])
+                group_end = max(w['end_time'] for line in current_lines for w in line['words'])
+                all_group_words = [w for line in current_lines for w in line['words']]
+                
+                groups.append({
+                    'words': all_group_words,
+                    'lines': current_lines.copy(),
+                    'text': '\n'.join(line['text'] for line in current_lines),
+                    'start_time': group_start,
+                    'end_time': group_end,
+                    'word_count': len(all_group_words),
+                    'line_count': len(current_lines),
+                    'fits_in_box': True
+                })
+                
+                # Start new group
+                current_lines = []
+                current_group_words = []
+        else:
+            # Add word to current line
+            current_line_words.append(word)
+            current_line_width = test_width
+    
+    # Handle remaining words
+    if current_line_words:
+        current_lines.append({
+            'words': current_line_words.copy(),
+            'text': ' '.join(w['word'] for w in current_line_words),
+            'width': current_line_width
+        })
+    
+    if current_lines:
+        # Create final group
+        group_start = min(w['start_time'] for line in current_lines for w in line['words'])
+        group_end = max(w['end_time'] for line in current_lines for w in line['words'])
+        all_group_words = [w for line in current_lines for w in line['words']]
+        
+        groups.append({
+            'words': all_group_words,
+            'lines': current_lines.copy(),
+            'text': '\n'.join(line['text'] for line in current_lines),
+            'start_time': group_start,
+            'end_time': group_end,
+            'word_count': len(all_group_words),
+            'line_count': len(current_lines),
+            'fits_in_box': True
+        })
+    
+    logger.info(f"Created {len(groups)} area-based word groups from {len(word_data)} words")
+    logger.info(f"Groups have an average of {sum(g['line_count'] for g in groups) / len(groups):.1f} lines each")
+    
+    return groups
+
+
+def create_line_groups(word_groups: List[Dict], max_lines: int = 2) -> List[Dict]:
+    """
+    Group word groups (lines) into line groups based on max_lines parameter.
+    Each line group represents a frame and contains multiple lines (word groups).
+    
+    Args:
+        word_groups: List of word groups from create_word_groups (each becomes a line)
+        max_lines: Maximum number of lines per line group (frame)
+        
+    Returns:
+        List of line groups, each containing multiple word groups (lines) with combined timing
+    """
+    if not word_groups:
+        return []
+    
+    if max_lines <= 0:
+        max_lines = 2  # Default fallback
+    
+    line_groups = []
+    current_lines = []
+    
+    for word_group in word_groups:
+        current_lines.append(word_group)
+        
+        # When we reach max_lines, create a line group
+        if len(current_lines) >= max_lines:
+            # Calculate combined timing for the line group
+            start_time = min(line['start_time'] for line in current_lines)
+            end_time = max(line['end_time'] for line in current_lines)
+            
+            # Create line group
+            line_group = {
+                'lines': current_lines.copy(),  # List of word groups (lines)
+                'line_count': len(current_lines),
+                'start_time': start_time,
+                'end_time': end_time,
+                'combined_text': '\n'.join(line['text'] for line in current_lines),
+                'total_words': sum(line['word_count'] for line in current_lines)
+            }
+            
+            line_groups.append(line_group)
+            current_lines = []
+    
+    # Handle remaining lines
+    if current_lines:
+        start_time = min(line['start_time'] for line in current_lines)
+        end_time = max(line['end_time'] for line in current_lines)
+        
+        line_group = {
+            'lines': current_lines.copy(),
+            'line_count': len(current_lines),
+            'start_time': start_time,
+            'end_time': end_time,
+            'combined_text': '\n'.join(line['text'] for line in current_lines),
+            'total_words': sum(line['word_count'] for line in current_lines)
+        }
+        
+        line_groups.append(line_group)
+    
+    logger.info(f"Created {len(line_groups)} line groups from {len(word_groups)} word groups (lines) with max {max_lines} lines per group")
+    return line_groups
+
+
 def create_timing_windows_grouped(word_groups: List[Dict], 
                                  fps: float,
                                  max_lines: int = 2) -> Dict[int, List[Dict]]:
@@ -824,6 +1042,92 @@ def create_timing_windows_grouped(word_groups: List[Dict],
         timing_windows[frame_num] = active_groups
     
     logger.info(f"Created grouped timing windows for {total_frames} frames at {fps}fps")
+    return timing_windows
+
+
+def create_timing_windows_line_grouped(line_groups: List[Dict], fps: float) -> Dict[int, List[Dict]]:
+    """
+    Create frame-by-frame timing windows for line groups.
+    Each frame shows one complete line group (containing multiple lines).
+    
+    Args:
+        line_groups: List of line groups from create_line_groups
+        fps: Video frame rate
+        
+    Returns:
+        Dictionary mapping frame numbers to line groups to display
+    """
+    if not line_groups:
+        return {}
+    
+    # Calculate total duration
+    total_duration = max(group['end_time'] for group in line_groups)
+    total_frames = int(total_duration * fps) + 1
+    
+    timing_windows = {}
+    
+    for frame_num in range(total_frames):
+        current_time = frame_num / fps
+        
+        # Find line groups that should be displayed at this time
+        active_line_groups = []
+        for line_group in line_groups:
+            if line_group['start_time'] <= current_time <= line_group['end_time']:
+                active_line_groups.append(line_group)
+        
+        # Since line groups are designed to be mutually exclusive frames,
+        # we should typically have at most one active line group per frame
+        # But if there's overlap, take the most recent one
+        if len(active_line_groups) > 1:
+            # Sort by start time and take the most recent
+            active_line_groups = sorted(active_line_groups, key=lambda g: g['start_time'])[-1:]
+        
+        timing_windows[frame_num] = active_line_groups
+    
+    logger.info(f"Created line-grouped timing windows for {total_frames} frames at {fps}fps")
+    return timing_windows
+
+
+def create_timing_windows_area_based(area_groups: List[Dict], fps: float) -> Dict[int, List[Dict]]:
+    """
+    Create frame-by-frame timing windows for area-based word groups.
+    Each frame shows one complete area-based group (containing multiple lines that fit in the box).
+    
+    Args:
+        area_groups: List of area-based word groups from create_area_based_word_groups
+        fps: Video frame rate
+        
+    Returns:
+        Dictionary mapping frame numbers to area-based groups to display
+    """
+    if not area_groups:
+        return {}
+    
+    # Calculate total duration
+    total_duration = max(group['end_time'] for group in area_groups)
+    total_frames = int(total_duration * fps) + 1
+    
+    timing_windows = {}
+    
+    for frame_num in range(total_frames):
+        current_time = frame_num / fps
+        
+        # Find area groups that should be displayed at this time
+        active_area_groups = []
+        for area_group in area_groups:
+            if area_group['start_time'] <= current_time <= area_group['end_time']:
+                active_area_groups.append(area_group)
+        
+        # Since area groups are designed to be mutually exclusive frames,
+        # we should typically have at most one active area group per frame
+        # But if there's overlap, take the most recent one
+        if len(active_area_groups) > 1:
+            # Sort by start time and take the most recent
+            active_area_groups = sorted(active_area_groups, key=lambda g: g['start_time'])[-1:]
+        
+        timing_windows[frame_num] = active_area_groups
+    
+    logger.info(f"Created area-based timing windows for {total_frames} frames at {fps}fps")
     return timing_windows
 
 
