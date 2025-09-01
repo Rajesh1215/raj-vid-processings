@@ -5,6 +5,7 @@ Main node for the video subtitling system.
 
 import torch
 import numpy as np
+import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import json
 from typing import List, Dict, Optional, Tuple, Any
@@ -23,6 +24,8 @@ from .subtitle_utils import (
     create_timing_windows_line_grouped,
     create_area_based_word_groups,
     create_timing_windows_area_based,
+    calculate_precise_word_positions,
+    find_word_bounds_in_text,
     validate_word_timing_data
 )
 from .text_generator import RajTextGenerator
@@ -334,6 +337,322 @@ class RajSubtitleEngine:
         
         return (frames_tensor, total_frames, timing_info, frame_metadata)
     
+    def generate_subtitle_keyframes(self,
+                                  word_timings: List[Dict],
+                                  base_settings: Dict,
+                                  highlight_settings: Optional[Dict] = None,
+                                  max_lines: int = 2,
+                                  use_line_groups: bool = False,
+                                  use_area_based_grouping: bool = False,
+                                  box_width: int = 800,
+                                  box_height: int = 200) -> Dict[str, Any]:
+        """
+        Generate keyframes for subtitle video - only essential frames when content changes.
+        Much more efficient than FPS-level generation for testing and development.
+        
+        Args:
+            word_timings: Word timing data from RajWhisperProcess
+            base_settings: Main subtitle styling settings
+            highlight_settings: Optional word highlighting settings
+            max_lines: Maximum lines to display simultaneously (for non-area-based modes)
+            use_line_groups: If True, use line groups (word groups -> lines -> frames)
+            use_area_based_grouping: If True, use area-based grouping (fit words in box dimensions)
+            box_width: Width of subtitle box for area-based grouping
+            box_height: Height of subtitle box for area-based grouping
+            
+        Returns:
+            Dictionary containing keyframes, metadata, and timing information
+        """
+        logger.info(f"Starting keyframe generation with {len(word_timings)} words")
+        
+        # Validate and parse word timing data
+        is_valid, issues = validate_word_timing_data(word_timings)
+        if not is_valid:
+            logger.error(f"Invalid word timing data: {issues}")
+            raise ValueError(f"Word timing validation failed: {'; '.join(issues)}")
+        
+        parsed_words = parse_whisper_word_data(word_timings)
+        if not parsed_words:
+            logger.error("No valid words found in timing data")
+            raise ValueError("No valid words found in timing data")
+        
+        # Get dimensions from base_settings
+        output_config = base_settings.get('output_config', {})
+        display_width = output_config.get('output_width', 512)
+        display_height = output_config.get('output_height', 256)
+        
+        logger.info(f"Keyframe dimensions: {display_width}x{display_height}")
+        
+        # Get font and layout configuration
+        font_config = base_settings.get('font_config', {})
+        layout_config = base_settings.get('layout_config', {})
+        margin_x = layout_config.get('margin_x', 20)
+        
+        # Create grouping based on selected mode
+        if use_area_based_grouping:
+            # Area-based grouping mode
+            margin_y = layout_config.get('margin_y', 20)
+            line_spacing = layout_config.get('line_spacing', 1.2)
+            
+            word_groups = create_area_based_word_groups(
+                parsed_words,
+                box_width,
+                box_height,
+                font_config,
+                margin_x,
+                margin_y,
+                line_spacing
+            )
+            grouping_mode = "area_based"
+            
+        elif use_line_groups:
+            # Line groups mode
+            word_groups = create_word_groups(
+                parsed_words, 
+                display_width, 
+                font_config, 
+                max_lines, 
+                margin_x
+            )
+            line_groups = create_line_groups(word_groups, max_lines)
+            word_groups = line_groups  # Use line groups as the main groups
+            grouping_mode = "line_groups"
+            
+        else:
+            # Original word groups mode
+            word_groups = create_word_groups(
+                parsed_words, 
+                display_width, 
+                font_config, 
+                max_lines, 
+                margin_x
+            )
+            grouping_mode = "word_groups"
+        
+        logger.info(f"Using {grouping_mode} mode: {len(word_groups)} groups")
+        
+        # Detect keyframe timestamps
+        keyframe_times = self._detect_keyframe_times(parsed_words, word_groups)
+        logger.info(f"Detected {len(keyframe_times)} keyframes")
+        
+        # Generate keyframes
+        keyframes = []
+        total_duration = get_total_duration(parsed_words)
+        
+        for i, timestamp in enumerate(keyframe_times):
+            # Calculate duration until next keyframe
+            if i < len(keyframe_times) - 1:
+                duration = keyframe_times[i + 1] - timestamp
+            else:
+                duration = total_duration - timestamp
+            
+            # Generate frame for this timestamp
+            keyframe_data = self._generate_keyframe_at_time(
+                timestamp=timestamp,
+                duration=duration,
+                parsed_words=parsed_words,
+                word_groups=word_groups,
+                base_settings=base_settings,
+                highlight_settings=highlight_settings,
+                output_width=display_width,
+                output_height=display_height,
+                grouping_mode=grouping_mode,
+                use_line_groups=use_line_groups,
+                use_area_based_grouping=use_area_based_grouping
+            )
+            
+            if keyframe_data:
+                keyframes.append(keyframe_data)
+        
+        # Calculate compression statistics
+        estimated_fps_frames = int(total_duration * 30)  # Assume 30fps
+        compression_ratio = ((estimated_fps_frames - len(keyframes)) / estimated_fps_frames) * 100
+        
+        # Create metadata
+        metadata = {
+            "total_keyframes": len(keyframes),
+            "total_duration": total_duration,
+            "estimated_fps_frames": estimated_fps_frames,
+            "compression_ratio": f"{compression_ratio:.1f}% reduction vs 30fps",
+            "grouping_mode": grouping_mode,
+            "settings_used": {
+                "base": base_settings,
+                "highlight": highlight_settings,
+                "max_lines": max_lines,
+                "use_line_groups": use_line_groups,
+                "use_area_based_grouping": use_area_based_grouping
+            },
+            "word_groups": len(word_groups),
+            "total_words": len(parsed_words),
+            "display_dimensions": f"{display_width}x{display_height}"
+        }
+        
+        logger.info(f"Generated {len(keyframes)} keyframes - {compression_ratio:.1f}% reduction from FPS")
+        
+        return {
+            "keyframes": keyframes,
+            "metadata": metadata,
+            "word_timings": parsed_words,
+            "word_groups": word_groups
+        }
+    
+    def _detect_keyframe_times(self, parsed_words: List[Dict], word_groups: List[Dict]) -> List[float]:
+        """
+        Detect timestamps where keyframes should be generated.
+        Only generate frames when content actually changes.
+        
+        Args:
+            parsed_words: List of word dictionaries with timing
+            word_groups: List of word groups with timing
+            
+        Returns:
+            Sorted list of timestamps for keyframe generation
+        """
+        keyframe_times = set()
+        
+        # Add word highlighting change points
+        for word in parsed_words:
+            # Add when word starts being highlighted
+            keyframe_times.add(word['start_time'])
+            # Add when word stops being highlighted
+            keyframe_times.add(word['end_time'])
+        
+        # Add word group visibility change points
+        for group in word_groups:
+            # Add when group becomes visible
+            keyframe_times.add(group['start_time'])
+            # Add when group disappears
+            keyframe_times.add(group['end_time'])
+        
+        # Add start and end boundaries
+        if parsed_words:
+            keyframe_times.add(0.0)  # Start of subtitle sequence
+            keyframe_times.add(max(word['end_time'] for word in parsed_words))  # End
+        
+        # Convert to sorted list and remove very close duplicates
+        keyframe_times = sorted(list(keyframe_times))
+        
+        # Remove duplicates that are too close together (< 0.01s apart)
+        filtered_times = []
+        for time in keyframe_times:
+            if not filtered_times or abs(time - filtered_times[-1]) >= 0.01:
+                filtered_times.append(time)
+        
+        logger.info(f"Keyframe times: {len(keyframe_times)} raw -> {len(filtered_times)} filtered")
+        return filtered_times
+    
+    def _generate_keyframe_at_time(self,
+                                 timestamp: float,
+                                 duration: float,
+                                 parsed_words: List[Dict],
+                                 word_groups: List[Dict],
+                                 base_settings: Dict,
+                                 highlight_settings: Optional[Dict],
+                                 output_width: int,
+                                 output_height: int,
+                                 grouping_mode: str,
+                                 use_line_groups: bool,
+                                 use_area_based_grouping: bool) -> Optional[Dict]:
+        """
+        Generate a keyframe at a specific timestamp.
+        
+        Args:
+            timestamp: Time in seconds for this keyframe
+            duration: Duration until next keyframe
+            parsed_words: All word timing data
+            word_groups: All word groups
+            base_settings: Base text settings
+            highlight_settings: Highlight text settings
+            output_width: Frame width
+            output_height: Frame height
+            grouping_mode: Type of grouping being used
+            use_line_groups: Whether line groups mode is active
+            use_area_based_grouping: Whether area-based mode is active
+            
+        Returns:
+            Dictionary containing keyframe data or None if no content
+        """
+        try:
+            # Find active word groups at this timestamp
+            active_groups = []
+            for group in word_groups:
+                if group['start_time'] <= timestamp <= group['end_time']:
+                    active_groups.append(group)
+            
+            # Find highlighted word at this timestamp
+            highlighted_word = get_current_highlighted_word(parsed_words, timestamp)
+            
+            # Generate frame based on grouping mode
+            if not active_groups:
+                # No content at this time - generate empty frame
+                frame_array = self._generate_empty_frame(output_width, output_height, base_settings)
+                active_text = ""
+                group_info = {}
+            else:
+                # Generate frame with content
+                if use_area_based_grouping:
+                    frame_array = self._generate_frame_with_area_groups(
+                        active_groups, timestamp, base_settings, highlight_settings,
+                        output_width, output_height
+                    )
+                elif use_line_groups:
+                    frame_array = self._generate_frame_with_line_groups(
+                        active_groups, timestamp, base_settings, highlight_settings,
+                        output_width, output_height
+                    )
+                else:
+                    frame_array = self._generate_frame_with_groups(
+                        active_groups, timestamp, base_settings, highlight_settings,
+                        output_width, output_height
+                    )
+                
+                # Extract active text and group info
+                if use_area_based_grouping and active_groups:
+                    active_text = active_groups[0].get('text', '')
+                    group_info = {
+                        'line_count': active_groups[0].get('line_count', 0),
+                        'word_count': active_groups[0].get('word_count', 0)
+                    }
+                elif use_line_groups and active_groups:
+                    active_text = active_groups[0].get('combined_text', '')
+                    group_info = {
+                        'line_count': active_groups[0].get('line_count', 0),
+                        'lines': len(active_groups[0].get('lines', []))
+                    }
+                else:
+                    # Regular word groups
+                    text_lines = []
+                    total_words = 0
+                    for group in active_groups:
+                        text_lines.append(group.get('text', ''))
+                        total_words += len(group.get('words', []))
+                    active_text = '\n'.join(text_lines)
+                    group_info = {
+                        'groups': len(active_groups),
+                        'total_words': total_words
+                    }
+            
+            # Create keyframe data structure
+            keyframe_data = {
+                "timestamp": timestamp,
+                "duration": duration,
+                "frame_image": frame_array,  # numpy array (height, width, 3)
+                "highlighted_word": highlighted_word.get('word', '') if highlighted_word else '',
+                "highlighted_word_index": highlighted_word.get('index', -1) if highlighted_word else -1,
+                "active_text": active_text,
+                "active_groups_count": len(active_groups),
+                "grouping_mode": grouping_mode,
+                "group_info": group_info,
+                "frame_dimensions": f"{output_width}x{output_height}",
+                "has_highlighting": highlight_settings is not None and highlighted_word is not None
+            }
+            
+            return keyframe_data
+            
+        except Exception as e:
+            logger.error(f"Error generating keyframe at {timestamp}s: {e}")
+            return None
+    
     def _generate_frame_with_groups(self,
                                   active_groups: List[Dict],
                                   current_time: float,
@@ -356,18 +675,34 @@ class RajSubtitleEngine:
         if not full_text.strip():
             return self._generate_empty_frame(output_width, output_height, base_settings)
         
-        # Generate base subtitle frame using text generator
-        base_frame = self._render_text_with_settings(full_text, base_settings)
-        
         # Add word highlighting if enabled
         if highlight_settings and all_words:
+            logger.debug(f"Highlighting enabled at {current_time:.2f}s with {len(all_words)} words")
             highlighted_word = get_current_highlighted_word(all_words, current_time)
             if highlighted_word:
-                # For now, skip complex highlighting in grouped mode
-                # This could be enhanced later to highlight within groups
-                pass
+                logger.info(f"Frame {current_time:.2f}s: highlighting word '{highlighted_word.get('word', '')}'")
+            else:
+                logger.debug(f"Frame {current_time:.2f}s: no word to highlight")
+            # Use the new mixed text rendering with precise highlighting
+            return self._render_mixed_text_with_highlighting(
+                full_text=full_text,
+                all_words=all_words,
+                highlighted_word=highlighted_word,
+                current_time=current_time,
+                base_settings=base_settings,
+                highlight_settings=highlight_settings,
+                output_width=output_width,
+                output_height=output_height
+            )
+        else:
+            if not highlight_settings:
+                logger.debug(f"Frame {current_time:.2f}s: no highlight settings provided")
+            if not all_words:
+                logger.debug(f"Frame {current_time:.2f}s: no words data available")
         
-        return base_frame
+        # No highlighting, use standard rendering
+        logger.debug(f"Frame {current_time:.2f}s: using standard rendering (no highlighting)")
+        return self._render_text_with_settings(full_text, base_settings)
     
     def _generate_frame_with_line_groups(self,
                                        active_line_groups: List[Dict],
@@ -391,9 +726,6 @@ class RajSubtitleEngine:
         if not full_text.strip():
             return self._generate_empty_frame(output_width, output_height, base_settings)
         
-        # Generate base subtitle frame using text generator
-        base_frame = self._render_text_with_settings(full_text, base_settings)
-        
         # Add word highlighting if enabled
         if highlight_settings:
             # For line groups, we need to extract all words from all lines in the group
@@ -403,12 +735,20 @@ class RajSubtitleEngine:
             
             if all_words:
                 highlighted_word = get_current_highlighted_word(all_words, current_time)
-                if highlighted_word:
-                    # For now, skip complex highlighting in line groups mode
-                    # This could be enhanced later to highlight within line groups
-                    pass
+                # Use the new mixed text rendering with precise highlighting
+                return self._render_mixed_text_with_highlighting(
+                    full_text=full_text,
+                    all_words=all_words,
+                    highlighted_word=highlighted_word,
+                    current_time=current_time,
+                    base_settings=base_settings,
+                    highlight_settings=highlight_settings,
+                    output_width=output_width,
+                    output_height=output_height
+                )
         
-        return base_frame
+        # No highlighting, use standard rendering
+        return self._render_text_with_settings(full_text, base_settings)
     
     def _generate_frame_with_area_groups(self,
                                        active_area_groups: List[Dict],
@@ -432,9 +772,6 @@ class RajSubtitleEngine:
         if not full_text.strip():
             return self._generate_empty_frame(output_width, output_height, base_settings)
         
-        # Generate base subtitle frame using text generator
-        base_frame = self._render_text_with_settings(full_text, base_settings)
-        
         # Add word highlighting if enabled
         if highlight_settings:
             # For area groups, extract all words from the group
@@ -442,12 +779,20 @@ class RajSubtitleEngine:
             
             if all_words:
                 highlighted_word = get_current_highlighted_word(all_words, current_time)
-                if highlighted_word:
-                    # For now, skip complex highlighting in area-based groups mode
-                    # This could be enhanced later to highlight within area groups
-                    pass
+                # Use the new mixed text rendering with precise highlighting
+                return self._render_mixed_text_with_highlighting(
+                    full_text=full_text,
+                    all_words=all_words,
+                    highlighted_word=highlighted_word,
+                    current_time=current_time,
+                    base_settings=base_settings,
+                    highlight_settings=highlight_settings,
+                    output_width=output_width,
+                    output_height=output_height
+                )
         
-        return base_frame
+        # No highlighting, use standard rendering
+        return self._render_text_with_settings(full_text, base_settings)
     
     def _generate_frame_with_words(self,
                                  active_words: List[Dict],
@@ -478,14 +823,17 @@ class RajSubtitleEngine:
         # Add word highlighting if enabled
         if highlight_settings:
             highlighted_word = get_current_highlighted_word(active_words, current_time)
-            if highlighted_word:
-                base_frame = self._add_word_highlight(
-                    base_frame, 
-                    highlighted_word, 
-                    word_lines, 
-                    highlight_settings,
-                    base_settings
-                )
+            # Use the new mixed text rendering with precise highlighting
+            return self._render_mixed_text_with_highlighting(
+                full_text=full_text,
+                all_words=active_words,
+                highlighted_word=highlighted_word,
+                current_time=current_time,
+                base_settings=base_settings,
+                highlight_settings=highlight_settings,
+                output_width=output_width,
+                output_height=output_height
+            )
         
         return base_frame
     
@@ -569,58 +917,267 @@ class RajSubtitleEngine:
             output_height = settings.get('output_config', {}).get('output_height', 256)
             return self._generate_empty_frame(output_width, output_height, settings)
     
-    def _add_word_highlight(self,
-                          base_frame: np.ndarray,
-                          highlighted_word: Dict,
-                          word_lines: List[List[Dict]],
-                          highlight_settings: Dict,
-                          base_settings: Dict) -> np.ndarray:
-        """Add highlighting to a specific word in the frame."""
+    def _render_mixed_text_with_highlighting(self,
+                                           full_text: str,
+                                           all_words: List[Dict],
+                                           highlighted_word: Optional[Dict],
+                                           current_time: float,
+                                           base_settings: Dict,
+                                           highlight_settings: Dict,
+                                           output_width: int,
+                                           output_height: int) -> np.ndarray:
+        """Render text with precise word highlighting using calculated positions."""
         
-        # Find which line contains the highlighted word
-        target_line_idx = -1
-        target_word_idx = -1
+        logger.debug(f"Mixed rendering: text='{full_text[:50]}...', highlighted='{highlighted_word.get('word', '') if highlighted_word else None}'")
         
-        for line_idx, line_words in enumerate(word_lines):
-            for word_idx, word in enumerate(line_words):
-                if word.get('index') == highlighted_word.get('index'):
-                    target_line_idx = line_idx
-                    target_word_idx = word_idx
-                    break
-            if target_line_idx >= 0:
-                break
-        
-        if target_line_idx < 0:
-            logger.warning(f"Could not find highlighted word '{highlighted_word['word']}' in current lines")
-            return base_frame
-        
-        # For simplicity, render the highlighted word as overlay
-        # In a more sophisticated implementation, you'd calculate exact word positions
-        highlighted_text = highlighted_word['word']
+        if not highlighted_word:
+            # No highlighting needed, use standard rendering
+            logger.debug("No highlighted word, falling back to standard rendering")
+            return self._render_text_with_settings(full_text, base_settings)
         
         try:
-            # Render just the highlighted word with highlight settings
-            highlight_frame = self._render_text_with_settings(highlighted_text, highlight_settings)
+            # Use dynamic rendering for clean highlighting without duplication
+            logger.info(f"Using dynamic highlighting for word '{highlighted_word.get('word', '')}'")
             
-            # For now, just composite the highlight in the center
-            # TODO: Implement precise word positioning
-            base_pil = Image.fromarray(base_frame)
-            highlight_pil = Image.fromarray(highlight_frame)
+            # Current timestamp is now passed as a parameter
             
-            # Simple center overlay - in production, calculate exact word position
-            base_pil = base_pil.convert('RGBA')
-            highlight_pil = highlight_pil.convert('RGBA')
+            return self._render_text_with_dynamic_highlighting(
+                full_text=full_text,
+                all_words=all_words,
+                highlighted_word=highlighted_word,
+                current_time=current_time,
+                base_settings=base_settings,
+                highlight_settings=highlight_settings,
+                output_width=output_width,
+                output_height=output_height
+            )
             
-            # Create a composite
-            composite = Image.alpha_composite(base_pil, highlight_pil)
+        except Exception as e:
+            logger.warning(f"Error in mixed text highlighting: {e}")
+            # Fallback to base rendering
+            return self._render_text_with_settings(full_text, base_settings)
+    
+    def _render_text_with_dynamic_highlighting(self,
+                                             full_text: str,
+                                             all_words: List[Dict],
+                                             highlighted_word: Optional[Dict],
+                                             current_time: float,
+                                             base_settings: Dict,
+                                             highlight_settings: Dict,
+                                             output_width: int,
+                                             output_height: int) -> np.ndarray:
+        """Render text with dynamic word-level highlighting in a single pass."""
+        
+        logger.debug(f"Dynamic rendering: {len(all_words)} words, highlighted='{highlighted_word.get('word', '') if highlighted_word else None}'")
+        
+        try:
+            # Extract configurations
+            font_config = base_settings.get('font_config', {})
+            layout_config = base_settings.get('layout_config', {})
+            output_config = base_settings.get('output_config', {})
             
-            # Convert to numpy and standardize format
-            result_array = np.array(composite.convert('RGB'))
+            # Get colors
+            base_color = font_config.get('color', '#000000')
+            bg_color = output_config.get('bg_color', '#FFFFFF')
+            highlight_font_config = highlight_settings.get('font_config', {})
+            highlight_color = highlight_font_config.get('color', '#0000FF')
+            
+            # Parse background color
+            if bg_color.startswith('#'):
+                bg_hex = bg_color[1:]
+                bg_r = int(bg_hex[0:2], 16)
+                bg_g = int(bg_hex[2:4], 16) 
+                bg_b = int(bg_hex[4:6], 16)
+                bg_rgb = (bg_r, bg_g, bg_b)
+            else:
+                bg_rgb = (255, 255, 255)  # Default white
+            
+            # Create image
+            image = Image.new('RGB', (output_width, output_height), bg_rgb)
+            draw = ImageDraw.Draw(image)
+            
+            # Load fonts
+            font_name = font_config.get('font_name', 'Arial')
+            font_size = font_config.get('font_size', 20)
+            highlight_font_size = highlight_font_config.get('font_size', font_size)
+            
+            # Get system font
+            base_font = self._load_system_font(font_name, font_size)
+            highlight_font = self._load_system_font(font_name, highlight_font_size)
+            
+            # Parse colors
+            base_rgb = self._parse_color(base_color)
+            highlight_rgb = self._parse_color(highlight_color)
+            
+            # Split text into lines and words
+            lines = full_text.split('\n')
+            
+            # Build word-to-index mapping for accurate highlighting
+            word_index_map = self._build_word_index_map(lines, all_words)
+            
+            # Get highlighted word index for precise matching
+            highlighted_index = highlighted_word.get('index', -1) if highlighted_word else -1
+            
+            logger.debug(f"Highlighted word index: {highlighted_index}, word: '{highlighted_word.get('word', '') if highlighted_word else None}'")
+            
+            # Layout configuration
+            text_align = layout_config.get('alignment', 'center')
+            margin_x = layout_config.get('margin_x', 10)
+            margin_y = layout_config.get('margin_y', 10)
+            line_spacing = layout_config.get('line_spacing', 1.2)
+            
+            # Calculate line height
+            line_height = int(font_size * line_spacing)
+            
+            # Calculate starting Y position for vertical centering
+            total_text_height = len(lines) * line_height
+            start_y = (output_height - total_text_height) // 2
+            start_y = max(margin_y, start_y)
+            
+            # Render each line
+            for line_idx, line_text in enumerate(lines):
+                if not line_text.strip():
+                    continue
+                    
+                line_words = line_text.split()
+                y_pos = start_y + (line_idx * line_height)
+                
+                # Calculate line width for alignment
+                line_width = 0
+                for word in line_words:
+                    word_width = draw.textbbox((0, 0), word + " ", font=base_font)[2]
+                    line_width += word_width
+                
+                # Calculate starting X position based on alignment
+                if text_align == 'center':
+                    start_x = (output_width - line_width) // 2
+                elif text_align == 'right':
+                    start_x = output_width - line_width - margin_x
+                else:  # left
+                    start_x = margin_x
+                
+                start_x = max(margin_x, start_x)
+                
+                # Render each word in the line
+                current_x = start_x
+                for word_pos, word in enumerate(line_words):
+                    # Check if this word should be highlighted using index-based matching
+                    is_highlighted = False
+                    word_index = word_index_map.get((line_idx, word_pos), -1)
+                    
+                    if highlighted_index >= 0 and word_index == highlighted_index:
+                        # Verify timing as additional check - handle both Whisper and processed formats
+                        word_start = highlighted_word.get('start', highlighted_word.get('start_time', 0))
+                        word_end = highlighted_word.get('end', highlighted_word.get('end_time', 0))
+                        if word_start <= current_time <= word_end:
+                            is_highlighted = True
+                            logger.debug(f"Highlighting word '{word}' at position ({line_idx}, {word_pos}) with index {word_index} at time {current_time:.2f}s (range: {word_start:.2f}-{word_end:.2f}s)")
+                        else:
+                            logger.debug(f"Word '{word}' index matches but timing failed: {current_time:.2f}s not in [{word_start:.2f}s, {word_end:.2f}s]")
+                    
+                    # Choose font and color
+                    if is_highlighted:
+                        word_font = highlight_font
+                        word_color = highlight_rgb
+                    else:
+                        word_font = base_font
+                        word_color = base_rgb
+                    
+                    # Draw the word
+                    draw.text((current_x, y_pos), word, font=word_font, fill=word_color)
+                    
+                    # Move to next word position
+                    word_width = draw.textbbox((0, 0), word + " ", font=word_font)[2]
+                    current_x += word_width
+            
+            # Convert to numpy array
+            result_array = np.array(image)
             return self._standardize_frame_format(result_array)
             
         except Exception as e:
-            logger.warning(f"Error adding word highlight: {e}")
-            return base_frame
+            logger.error(f"Error in dynamic highlighting: {e}")
+            # Fallback to base rendering
+            return self._render_text_with_settings(full_text, base_settings)
+    
+    def _load_system_font(self, font_name: str, font_size: int) -> ImageFont.FreeTypeFont:
+        """Load a system font or return default."""
+        font_paths = {
+            'Arial': ['/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+            'Helvetica': ['/System/Library/Fonts/Helvetica.ttc', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+            'Times': ['/System/Library/Fonts/Supplemental/Times New Roman.ttf', '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf']
+        }
+        
+        for path in font_paths.get(font_name, font_paths['Arial']):
+            if os.path.exists(path):
+                try:
+                    return ImageFont.truetype(path, font_size)
+                except Exception:
+                    continue
+        
+        return ImageFont.load_default()
+    
+    def _parse_color(self, color_str: str) -> Tuple[int, int, int]:
+        """Parse color string to RGB tuple."""
+        if color_str.startswith('#'):
+            color_hex = color_str[1:]
+            try:
+                r = int(color_hex[0:2], 16)
+                g = int(color_hex[2:4], 16)
+                b = int(color_hex[4:6], 16)
+                return (r, g, b)
+            except (ValueError, IndexError):
+                return (0, 0, 0)  # Default black
+        else:
+            return (0, 0, 0)  # Default black
+    
+    def _build_word_index_map(self, lines: List[str], all_words: List[Dict]) -> Dict[Tuple[int, int], int]:
+        """
+        Build mapping from (line_index, word_position) to word timing data index.
+        Works with both raw Whisper format and processed format.
+        
+        Args:
+            lines: List of text lines
+            all_words: List of word timing data dictionaries (raw Whisper format)
+            
+        Returns:
+            Dict mapping (line_idx, word_pos) tuples to word indices
+        """
+        word_index_map = {}
+        
+        # Create a flat list of all words from the text lines
+        text_words = []
+        for line_idx, line_text in enumerate(lines):
+            line_words = line_text.split()
+            for word_pos, word in enumerate(line_words):
+                text_words.append({
+                    'word': word.strip(),
+                    'line_idx': line_idx,
+                    'word_pos': word_pos
+                })
+        
+        # Match text words with timing data words by order
+        logger.debug(f"Mapping {len(text_words)} text words to {len(all_words)} timing words")
+        
+        for text_idx, text_word in enumerate(text_words):
+            if text_idx < len(all_words):
+                timing_word = all_words[text_idx]
+                # Use array index as the timing index (since raw Whisper data doesn't have index field)
+                timing_index = timing_word.get('index', text_idx)
+                
+                # Map (line_idx, word_pos) -> timing_index  
+                key = (text_word['line_idx'], text_word['word_pos'])
+                word_index_map[key] = timing_index
+                
+                # Get word from timing data for verification
+                timing_word_text = timing_word.get('word', '').strip()
+                
+                logger.debug(f"Mapped text '{text_word['word']}' at ({text_word['line_idx']}, {text_word['word_pos']}) -> timing word '{timing_word_text}' with index {timing_index}")
+                
+                # Warn if words don't match (could indicate alignment issues)
+                if text_word['word'].lower() != timing_word_text.lower():
+                    logger.warning(f"Word mismatch: text '{text_word['word']}' vs timing '{timing_word_text}' at index {timing_index}")
+        
+        return word_index_map
     
     def _generate_empty_frame(self, width: int, height: int, settings: Dict) -> np.ndarray:
         """Generate an empty frame with background."""

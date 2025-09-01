@@ -7,7 +7,20 @@ import re
 import os
 from typing import List, Dict, Tuple, Optional, Any
 from PIL import Image, ImageDraw, ImageFont
-from .utils import logger
+try:
+    from .utils import logger
+except ImportError:
+    # Fallback for standalone testing
+    import sys
+    if 'utils' in sys.modules and hasattr(sys.modules['utils'], 'logger'):
+        logger = sys.modules['utils'].logger
+    else:
+        class MockLogger:
+            def info(self, msg): print(f"INFO: {msg}")
+            def warning(self, msg): print(f"WARNING: {msg}")
+            def error(self, msg): print(f"ERROR: {msg}")
+            def debug(self, msg): print(f"DEBUG: {msg}")
+        logger = MockLogger()
 
 
 def correct_word_timing(word_data: List[Dict]) -> List[Dict]:
@@ -166,9 +179,17 @@ def get_current_highlighted_word(word_data: List[Dict], current_time: float) -> 
         Word dictionary to highlight, or None if no word is active
     """
     for word in word_data:
-        if word['start_time'] <= current_time <= word['end_time']:
+        # Handle both data structure formats for compatibility
+        # Format 1: start_time/end_time (parsed format)
+        # Format 2: start/end (raw whisper format)
+        start_time = word.get('start_time') or word.get('start', 0)
+        end_time = word.get('end_time') or word.get('end', 0)
+        
+        if start_time <= current_time <= end_time:
+            logger.debug(f"Highlighted word at {current_time:.2f}s: '{word.get('word', '')}' ({start_time:.2f}-{end_time:.2f})")
             return word
     
+    logger.debug(f"No highlighted word found at {current_time:.2f}s")
     return None
 
 
@@ -1171,6 +1192,162 @@ def create_timing_windows(word_data: List[Dict],
     
     logger.info(f"Created timing windows for {total_frames} frames at {fps}fps")
     return timing_windows
+
+
+def calculate_precise_word_positions(text: str, 
+                                    font_config: Dict,
+                                    layout_config: Dict,
+                                    output_width: int,
+                                    output_height: int,
+                                    words_data: List[Dict]) -> Dict[str, Dict]:
+    """
+    Calculate precise pixel positions for each word in multi-line text.
+    
+    Args:
+        text: The full text to be rendered (with newlines for multi-line)
+        font_config: Font configuration dictionary
+        layout_config: Layout configuration dictionary  
+        output_width: Output image width
+        output_height: Output image height
+        words_data: List of word dictionaries with timing data
+        
+    Returns:
+        Dictionary mapping word indices to their pixel boundaries
+        Format: {word_index: {'x': x, 'y': y, 'width': width, 'height': height, 'line': line_idx}}
+    """
+    word_positions = {}
+    
+    # Extract configuration
+    font_family = font_config.get('font_family', font_config.get('font_name', 'Arial'))
+    font_size = font_config.get('font_size', 36)
+    text_align = layout_config.get('text_align', 'center')
+    vertical_align = layout_config.get('vertical_align', 'middle')
+    margin_x = layout_config.get('margin_x', 20)
+    margin_y = layout_config.get('margin_y', 20)
+    line_spacing = layout_config.get('line_spacing', 1.2)
+    
+    # Find font path
+    font_paths = {
+        'Arial': ['/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Helvetica': ['/System/Library/Fonts/Helvetica.ttc', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+        'Times': ['/System/Library/Fonts/Supplemental/Times New Roman.ttf', '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf']
+    }
+    
+    font_path = None
+    for path in font_paths.get(font_family, font_paths['Arial']):
+        if os.path.exists(path):
+            font_path = path
+            break
+    
+    if not font_path:
+        logger.warning(f"Font {font_family} not found for position calculation")
+        return word_positions
+    
+    try:
+        # Load font
+        font = ImageFont.truetype(font_path, font_size)
+        
+        # Create temporary image for measurements
+        temp_img = Image.new('RGB', (output_width, output_height))
+        draw = ImageDraw.Draw(temp_img)
+        
+        # Split text into lines
+        lines = text.split('\n')
+        
+        # Calculate line height
+        bbox = draw.textbbox((0, 0), "Ag", font=font)
+        line_height = int((bbox[3] - bbox[1]) * line_spacing)
+        
+        # Calculate total text height
+        total_text_height = len(lines) * line_height
+        
+        # Calculate starting Y position based on vertical alignment
+        available_height = output_height - (2 * margin_y)
+        if vertical_align == 'top':
+            start_y = margin_y
+        elif vertical_align == 'bottom':
+            start_y = output_height - margin_y - total_text_height
+        else:  # middle
+            start_y = margin_y + (available_height - total_text_height) // 2
+        
+        # Create word index mapping
+        word_index_map = {}
+        for i, word_data in enumerate(words_data):
+            if 'word' in word_data:
+                word_index_map[word_data['word']] = word_data.get('index', i)
+        
+        # Process each line
+        for line_idx, line_text in enumerate(lines):
+            if not line_text.strip():
+                continue
+                
+            # Calculate line Y position
+            line_y = start_y + (line_idx * line_height)
+            
+            # Calculate line width for alignment
+            line_bbox = draw.textbbox((0, 0), line_text, font=font)
+            line_width = line_bbox[2] - line_bbox[0]
+            
+            # Calculate starting X position based on text alignment
+            available_width = output_width - (2 * margin_x)
+            if text_align == 'left':
+                line_start_x = margin_x
+            elif text_align == 'right':
+                line_start_x = output_width - margin_x - line_width
+            else:  # center
+                line_start_x = margin_x + (available_width - line_width) // 2
+            
+            # Split line into words and calculate positions
+            words_in_line = line_text.split()
+            current_x = line_start_x
+            
+            for word in words_in_line:
+                # Calculate word dimensions
+                word_bbox = draw.textbbox((0, 0), word, font=font)
+                word_width = word_bbox[2] - word_bbox[0]
+                word_height = word_bbox[3] - word_bbox[1]
+                
+                # Find word index
+                word_index = word_index_map.get(word, -1)
+                
+                # Store position
+                if word_index >= 0:
+                    word_positions[word_index] = {
+                        'x': current_x,
+                        'y': line_y,
+                        'width': word_width,
+                        'height': word_height,
+                        'line': line_idx,
+                        'word': word
+                    }
+                
+                # Move to next word position
+                space_bbox = draw.textbbox((0, 0), " ", font=font)
+                space_width = space_bbox[2] - space_bbox[0]
+                current_x += word_width + space_width
+        
+        logger.info(f"Calculated positions for {len(word_positions)} words across {len(lines)} lines")
+        
+    except Exception as e:
+        logger.error(f"Error calculating word positions: {e}")
+    
+    return word_positions
+
+
+def find_word_bounds_in_text(target_word_index: int,
+                           word_positions: Dict[str, Dict]) -> Optional[Dict]:
+    """
+    Find the pixel boundaries for a specific word by its index.
+    
+    Args:
+        target_word_index: Index of the word to find
+        word_positions: Word positions from calculate_precise_word_positions
+        
+    Returns:
+        Dictionary with word boundaries or None if not found
+        Format: {'x': x, 'y': y, 'width': width, 'height': height, 'line': line_idx}
+    """
+    return word_positions.get(target_word_index)
 
 
 def validate_word_timing_data(word_data: List[Dict]) -> Tuple[bool, List[str]]:
