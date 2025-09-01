@@ -84,6 +84,18 @@ class RajSubtitleEngine:
                     "min": 50,
                     "max": 1000,
                     "tooltip": "Height of the subtitle box for area-based grouping"
+                }),
+                "frame_padding_width": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 200,
+                    "tooltip": "Extra width added to frame for better text spacing (useful for large highlights)"
+                }),
+                "frame_padding_height": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 100,
+                    "tooltip": "Extra height added to frame for better text spacing (useful for large highlights)"
                 })
             }
         }
@@ -105,7 +117,9 @@ class RajSubtitleEngine:
                               use_line_groups: bool = False,
                               use_area_based_grouping: bool = False,
                               box_width: int = 800,
-                              box_height: int = 200) -> Tuple[torch.Tensor, int, str, Dict]:
+                              box_height: int = 200,
+                              frame_padding_width: int = 0,
+                              frame_padding_height: int = 0) -> Tuple[torch.Tensor, int, str, Dict]:
         """
         Generate subtitle video frames with word grouping, line grouping, or area-based grouping.
         
@@ -119,6 +133,14 @@ class RajSubtitleEngine:
             use_area_based_grouping: If True, use area-based grouping (fit words in box dimensions)
             box_width: Width of subtitle box for area-based grouping
             box_height: Height of subtitle box for area-based grouping
+            frame_padding_width: Extra width added to frame for better text spacing (0-200px)
+            frame_padding_height: Extra height added to frame for better text spacing (0-100px)
+            
+        Frame Sizing:
+            - Base dimensions come from base_settings.output_config
+            - Manual padding is added via frame_padding_width/height parameters
+            - Auto-padding is applied when highlight text is >30% larger than base text
+            - Final frame size = base_size + manual_padding + auto_padding
             
         Returns:
             Tuple of (video_frames_tensor, total_frames, timing_info, metadata)
@@ -152,7 +174,31 @@ class RajSubtitleEngine:
         layout_config = base_settings.get('layout_config', {})
         margin_x = layout_config.get('margin_x', 20)
         
-        logger.info(f"Using dimensions from settings: {display_width}x{display_height}")
+        logger.info(f"Base dimensions from settings: {display_width}x{display_height}")
+        
+        # Add smart padding detection for large highlights
+        auto_padding_width = 0
+        auto_padding_height = 0
+        if highlight_settings:
+            highlight_font_config = highlight_settings.get('font_config', {})
+            base_font_size = font_config.get('font_size', 20)
+            highlight_font_size = highlight_font_config.get('font_size', base_font_size)
+            
+            # Auto-suggest padding for significantly larger highlight text
+            if highlight_font_size > base_font_size * 1.3:
+                size_diff = highlight_font_size - base_font_size
+                auto_padding_width = min(int(size_diff * 2), 50)  # Max 50px auto padding
+                auto_padding_height = min(int(size_diff * 1), 25)  # Max 25px auto padding
+                logger.info(f"Large highlight detected ({highlight_font_size}px vs {base_font_size}px), suggesting auto padding: {auto_padding_width}x{auto_padding_height}")
+        
+        # Calculate final frame dimensions with padding
+        total_padding_width = frame_padding_width + auto_padding_width
+        total_padding_height = frame_padding_height + auto_padding_height
+        
+        final_width = display_width + total_padding_width
+        final_height = display_height + total_padding_height
+        
+        logger.info(f"Final frame dimensions: {final_width}x{final_height} (added padding: {total_padding_width}x{total_padding_height})")
         
         # Create grouping based on selected mode
         if use_area_based_grouping:
@@ -210,9 +256,9 @@ class RajSubtitleEngine:
         frames = []
         frame_metadata = {"frames": []}
         
-        # Use the dimensions we already extracted
-        output_width = display_width
-        output_height = display_height
+        # Use the final dimensions with padding
+        output_width = final_width
+        output_height = final_height
         
         for frame_num in range(total_frames):
             current_time = frame_num / video_fps
@@ -644,6 +690,8 @@ class RajSubtitleEngine:
                 "grouping_mode": grouping_mode,
                 "group_info": group_info,
                 "frame_dimensions": f"{output_width}x{output_height}",
+                "base_dimensions": f"{display_width}x{display_height}",
+                "padding_applied": f"{total_padding_width}x{total_padding_height}",
                 "has_highlighting": highlight_settings is not None and highlighted_word is not None
             }
             
