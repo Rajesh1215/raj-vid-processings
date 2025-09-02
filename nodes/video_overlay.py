@@ -373,22 +373,50 @@ class RajVideoOverlay:
         if post_overlay_section is not None:
             del post_overlay_section
         
-        # Move back to original device if needed (only for ComfyUI compatibility)
-        if original_device.type != "cpu":
-            logger.info(f"   Moving final result back to {original_device.type}...")
-            composite_frames = composite_frames_cpu.to(original_device)
-            del composite_frames_cpu
+        # For memory safety, keep final result on CPU and convert directly
+        # This avoids the large GPU memory allocation for final result
+        logger.info(f"   Converting final result on CPU to avoid GPU memory issues")
+        
+        try:
+            # Try to convert on CPU first (most memory-efficient)
+            composite_frames_comfy = tensor_to_video_frames(composite_frames_cpu)
+            composite_frames = composite_frames_cpu  # Keep reference for shape info
             
-            # Final cache clear
+            logger.info(f"   ✓ Final conversion completed on CPU")
+            
+        except Exception as e:
+            logger.warning(f"   CPU conversion failed: {e}")
+            
+            # Fallback: try to move to GPU if absolutely necessary
+            # Clear as much GPU memory as possible first
             if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
                 torch.mps.empty_cache()
             elif original_device.type == "cuda":
                 torch.cuda.empty_cache()
-        else:
-            composite_frames = composite_frames_cpu
-        
-        # Ensure ComfyUI format
-        composite_frames_comfy = tensor_to_video_frames(composite_frames)
+                
+            try:
+                logger.info(f"   Attempting GPU conversion with cleared cache...")
+                composite_frames = composite_frames_cpu.to(original_device)
+                composite_frames_comfy = tensor_to_video_frames(composite_frames)
+                del composite_frames_cpu
+                
+                # Clear cache again
+                if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                    torch.mps.empty_cache()
+                elif original_device.type == "cuda":
+                    torch.cuda.empty_cache()
+                    
+            except RuntimeError as gpu_error:
+                if "out of memory" in str(gpu_error).lower():
+                    logger.error(f"   GPU OOM during final conversion. Processing on CPU...")
+                    
+                    # Final fallback: force CPU processing
+                    composite_frames_comfy = tensor_to_video_frames(composite_frames_cpu)
+                    composite_frames = composite_frames_cpu
+                    
+                    logger.info(f"   ⚠️ Final result kept on CPU due to memory constraints")
+                else:
+                    raise gpu_error
         
         # Create info string with time-based details
         alpha_info = f"Alpha: {overlay_has_alpha}" if respect_alpha else "Alpha: ignored"
@@ -401,6 +429,8 @@ class RajVideoOverlay:
                       f"{alpha_info}"
         
         logger.info(f"✅ Time-based video overlay complete: {composite_frames.shape[0]} total frames, {overlay_duration_frames} overlay frames")
+        logger.info(f"   Final tensor device: {composite_frames.device.type}")
+        logger.info(f"   Output tensor shape: {composite_frames_comfy.shape}")
         
         return (
             composite_frames_comfy,
@@ -539,40 +569,149 @@ class RajVideoOverlay:
     
     def _apply_chroma_key(self, frames, chroma_settings):
         """
-        Apply chroma key settings to frames
+        Apply chroma key settings to frames with memory-efficient chunked processing
         """
         if not chroma_settings.get('enabled', False):
             return frames
         
-        logger.info("   Applying chroma key from settings")
+        logger.info("   Applying chroma key with memory-efficient processing")
         
         target_color = chroma_settings['color']
         tolerance = chroma_settings['tolerance']
         edge_softness = chroma_settings.get('edge_softness', 0.05)
         
-        # Apply the same chroma key logic as in RajVideoChromaKey
-        target_expanded = target_color.view(1, 1, 1, 3).expand_as(frames)
-        diff = frames - target_expanded
-        distances = torch.sqrt(torch.sum(diff ** 2, dim=-1))
+        # Get frame info
+        num_frames = frames.shape[0]
+        height = frames.shape[1]
+        width = frames.shape[2]
+        device = frames.device
         
-        # Create alpha mask
-        base_mask = 1.0 - torch.clamp(distances / tolerance, 0.0, 1.0)
-        
-        if edge_softness > 0.0:
-            soft_tolerance = tolerance + edge_softness
-            soft_mask = 1.0 - torch.clamp(distances / soft_tolerance, 0.0, 1.0)
-            edge_blend = torch.clamp((distances - tolerance) / edge_softness, 0.0, 1.0)
-            alpha_mask = base_mask * (1.0 - edge_blend) + soft_mask * edge_blend
+        # Determine chunk size based on available memory
+        # Smaller chunks for larger resolutions
+        pixels_per_frame = height * width
+        if pixels_per_frame > 2073600:  # > 1080p
+            chroma_chunk_size = 3
+        elif pixels_per_frame > 921600:  # > 720p
+            chroma_chunk_size = 5
         else:
-            alpha_mask = base_mask
+            chroma_chunk_size = 10
         
-        # Apply smooth step
-        alpha_mask = alpha_mask * alpha_mask * (3.0 - 2.0 * alpha_mask)
+        logger.info(f"   Processing {num_frames} frames in chunks of {chroma_chunk_size}")
         
-        # Add alpha channel to frames
-        alpha_mask = alpha_mask.unsqueeze(-1)
-        frames_with_alpha = torch.cat([frames, alpha_mask], dim=-1)
+        # Process chroma key in chunks to avoid memory issues
+        result_chunks = []
         
+        for start_idx in range(0, num_frames, chroma_chunk_size):
+            end_idx = min(start_idx + chroma_chunk_size, num_frames)
+            chunk = frames[start_idx:end_idx]
+            
+            logger.info(f"     Chroma key chunk: frames {start_idx}-{end_idx-1}")
+            
+            try:
+                # Memory-efficient color distance calculation
+                # Use broadcasting instead of expand_as to save memory
+                target_broadcast = target_color.view(1, 1, 1, 3)
+                
+                # Calculate difference (in-place operations where possible)
+                diff = chunk - target_broadcast
+                
+                # Square in-place to save memory
+                diff_squared = diff.pow(2)
+                
+                # Sum and sqrt for distance
+                distances = torch.sqrt(diff_squared.sum(dim=-1))
+                
+                # Clean up intermediate tensors immediately
+                del diff
+                del diff_squared
+                
+                # Create alpha mask
+                base_mask = 1.0 - torch.clamp(distances / tolerance, 0.0, 1.0)
+                
+                if edge_softness > 0.0:
+                    soft_tolerance = tolerance + edge_softness
+                    soft_mask = 1.0 - torch.clamp(distances / soft_tolerance, 0.0, 1.0)
+                    edge_blend = torch.clamp((distances - tolerance) / edge_softness, 0.0, 1.0)
+                    alpha_mask = base_mask * (1.0 - edge_blend) + soft_mask * edge_blend
+                    del soft_mask
+                    del edge_blend
+                else:
+                    alpha_mask = base_mask
+                
+                del base_mask
+                del distances
+                
+                # Apply smooth step (Hermite interpolation)
+                alpha_mask = alpha_mask * alpha_mask * (3.0 - 2.0 * alpha_mask)
+                
+                # Add alpha channel to chunk
+                alpha_mask = alpha_mask.unsqueeze(-1)
+                chunk_with_alpha = torch.cat([chunk, alpha_mask], dim=-1)
+                
+                # Move to CPU immediately to free GPU memory
+                chunk_cpu = chunk_with_alpha.cpu()
+                result_chunks.append(chunk_cpu)
+                
+                # Clean up
+                del chunk_with_alpha
+                del alpha_mask
+                del chunk
+                
+                # Clear GPU cache after each chunk
+                if device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                    torch.mps.empty_cache()
+                elif device.type == "cuda":
+                    torch.cuda.empty_cache()
+                    
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.error(f"⚠️ Chroma key OOM at chunk {start_idx}-{end_idx-1}")
+                    
+                    # Fallback: process frame by frame
+                    logger.info("   Falling back to frame-by-frame processing...")
+                    for frame_idx in range(start_idx, end_idx):
+                        single_frame = frames[frame_idx:frame_idx+1]
+                        
+                        # Simple chroma key for single frame
+                        target_broadcast = target_color.view(1, 1, 1, 3)
+                        diff = single_frame - target_broadcast
+                        distances = torch.sqrt((diff * diff).sum(dim=-1))
+                        
+                        alpha = 1.0 - torch.clamp(distances / tolerance, 0.0, 1.0)
+                        alpha = alpha * alpha * (3.0 - 2.0 * alpha)  # Smooth step
+                        alpha = alpha.unsqueeze(-1)
+                        
+                        frame_with_alpha = torch.cat([single_frame, alpha], dim=-1)
+                        result_chunks.append(frame_with_alpha.cpu())
+                        
+                        del frame_with_alpha
+                        del alpha
+                        del distances
+                        del diff
+                        
+                        if device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                            torch.mps.empty_cache()
+                else:
+                    raise  # Re-raise if not memory error
+        
+        # Concatenate all chunks on CPU
+        logger.info("   Concatenating chroma key results...")
+        frames_with_alpha_cpu = torch.cat(result_chunks, dim=0)
+        
+        # Clear chunks
+        del result_chunks
+        
+        # Move back to original device if needed
+        if device.type != "cpu":
+            frames_with_alpha = frames_with_alpha_cpu.to(device)
+            del frames_with_alpha_cpu
+            
+            if device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                torch.mps.empty_cache()
+        else:
+            frames_with_alpha = frames_with_alpha_cpu
+        
+        logger.info(f"   ✓ Chroma key applied: {frames_with_alpha.shape}")
         return frames_with_alpha
     
     def _apply_opacity_gradient(self, opacity_settings, height, width):
