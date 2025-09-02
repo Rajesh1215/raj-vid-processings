@@ -82,6 +82,35 @@ class RajVideoOverlay:
                 "chroma_settings": ("CHROMA_KEY", {
                     "tooltip": "Optional chroma key settings from RajVideoChromaKey"
                 }),
+                "chunk_size": ("INT", {
+                    "default": 5,
+                    "min": 1,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Number of frames to process at once (lower = less memory)"
+                }),
+                "force_cpu": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Force CPU processing to avoid GPU memory issues"
+                }),
+                "start_time": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 3600.0,
+                    "step": 0.1,
+                    "tooltip": "Overlay start time in seconds (0.0 = beginning)"
+                }),
+                "duration": ("FLOAT", {
+                    "default": -1.0,
+                    "min": -1.0,
+                    "max": 3600.0,
+                    "step": 0.1,
+                    "tooltip": "Overlay duration in seconds (-1.0 = full video duration)"
+                }),
+                "time_unit": (["seconds", "frames"], {
+                    "default": "seconds",
+                    "tooltip": "Time unit for start_time and duration parameters"
+                }),
             }
         }
     
@@ -92,7 +121,8 @@ class RajVideoOverlay:
     
     def overlay_videos(self, source_frames, overlay_frames, overlay_mode, resize_mode, 
                       base_opacity, respect_alpha, fps, bbox_x=0, bbox_y=0, 
-                      bbox_width=512, bbox_height=512, opacity_settings=None, chroma_settings=None):
+                      bbox_width=512, bbox_height=512, opacity_settings=None, chroma_settings=None,
+                      chunk_size=5, force_cpu=False, start_time=0.0, duration=-1.0, time_unit="seconds"):
         
         # Get frame info
         source_count = source_frames.shape[0]
@@ -109,30 +139,73 @@ class RajVideoOverlay:
         source_has_alpha = source_channels == 4
         overlay_has_alpha = overlay_channels == 4
         
+        # Handle CPU fallback
+        if force_cpu and source_frames.device.type != "cpu":
+            logger.info(f"🔄 Force CPU mode enabled, moving tensors to CPU...")
+            source_frames = source_frames.cpu()
+            overlay_frames = overlay_frames.cpu()
+        
         logger.info(f"🎭 Video Overlay Processing")
         logger.info(f"   Source: {source_count} frames, {source_width}x{source_height}, {source_channels} channels")
         logger.info(f"   Overlay: {overlay_count} frames, {overlay_width}x{overlay_height}, {overlay_channels} channels")
         logger.info(f"   Mode: {overlay_mode}, Resize: {resize_mode}")
         logger.info(f"   Alpha channels - Source: {source_has_alpha}, Overlay: {overlay_has_alpha}")
+        logger.info(f"   Processing on: {source_frames.device.type}, Chunk size: {chunk_size}")
         
-        # Synchronize frame counts
-        min_frames = min(source_count, overlay_count)
-        if source_count != overlay_count:
-            logger.warning(f"⚠️ Frame count mismatch: source={source_count}, overlay={overlay_count}")
-            
-            # Loop the shorter video
-            if source_count < overlay_count:
-                # Loop source frames
-                repeat_factor = (overlay_count // source_count) + 1
-                source_frames = source_frames.repeat(repeat_factor, 1, 1, 1)[:overlay_count]
-                min_frames = overlay_count
+        # Calculate time-based frame boundaries
+        if time_unit == "frames":
+            # Direct frame indices
+            start_frame = max(0, int(start_time))
+            if duration >= 0:
+                end_frame = min(source_count, start_frame + int(duration))
             else:
-                # Loop overlay frames  
-                repeat_factor = (source_count // overlay_count) + 1
-                overlay_frames = overlay_frames.repeat(repeat_factor, 1, 1, 1)[:source_count]
-                min_frames = source_count
-            
-            logger.info(f"   Synchronized to {min_frames} frames")
+                end_frame = source_count
+        else:
+            # Convert seconds to frames
+            start_frame = max(0, int(start_time * fps))
+            if duration >= 0:
+                end_frame = min(source_count, start_frame + int(duration * fps))
+            else:
+                end_frame = source_count
+        
+        # Validate time boundaries
+        if start_frame >= source_count:
+            raise ValueError(f"Start time/frame {start_time} is beyond video duration ({source_count} frames @ {fps} fps)")
+        
+        if start_frame >= end_frame:
+            logger.warning(f"⚠️ Invalid time range: start={start_frame}, end={end_frame}. Using full video.")
+            start_frame = 0
+            end_frame = source_count
+        
+        overlay_duration_frames = end_frame - start_frame
+        overlay_duration_seconds = overlay_duration_frames / fps
+        
+        logger.info(f"⏱️ Time-based overlay:")
+        logger.info(f"   Start: frame {start_frame} ({start_frame/fps:.2f}s)")
+        logger.info(f"   End: frame {end_frame} ({end_frame/fps:.2f}s)")
+        logger.info(f"   Duration: {overlay_duration_frames} frames ({overlay_duration_seconds:.2f}s)")
+        
+        # Early exit if no overlay needed
+        if overlay_duration_frames <= 0:
+            logger.warning("⚠️ No overlay duration specified, returning original video")
+            composite_frames_comfy = tensor_to_video_frames(source_frames)
+            overlay_info = "Video Overlay: No overlay applied (zero duration)"
+            return (composite_frames_comfy, overlay_info, source_count, fps)
+        
+        # Synchronize overlay frame count with overlay duration
+        if overlay_count < overlay_duration_frames:
+            logger.warning(f"⚠️ Overlay video ({overlay_count} frames) shorter than overlay duration ({overlay_duration_frames} frames)")
+            # Loop overlay frames to match duration
+            repeat_factor = (overlay_duration_frames // overlay_count) + 1
+            overlay_frames = overlay_frames.repeat(repeat_factor, 1, 1, 1)[:overlay_duration_frames]
+            logger.info(f"   Looped overlay to {overlay_duration_frames} frames")
+        elif overlay_count > overlay_duration_frames:
+            # Trim overlay to match duration
+            overlay_frames = overlay_frames[:overlay_duration_frames]
+            logger.info(f"   Trimmed overlay to {overlay_duration_frames} frames")
+        
+        # Update overlay count after synchronization
+        overlay_count = overlay_frames.shape[0]
         
         # Determine target dimensions based on overlay mode
         if overlay_mode == "full":
@@ -167,54 +240,172 @@ class RajVideoOverlay:
         # Resize overlay to target dimensions
         resized_overlay = self._resize_overlay(processed_overlay, target_width, target_height, resize_mode)
         
-        # Process in chunks for memory efficiency
-        chunk_size = 10
+        # Video segmentation for time-based overlay
+        logger.info(f"✂️ Segmenting video for time-based overlay processing")
+        
+        # Extract video segments (keep non-overlay parts on CPU to save GPU memory)
+        original_device = source_frames.device
+        pre_overlay_section = None
+        post_overlay_section = None
+        
+        if start_frame > 0:
+            pre_overlay_section = source_frames[:start_frame].cpu()  # Move to CPU immediately
+            logger.info(f"   Pre-overlay section: {pre_overlay_section.shape[0]} frames (CPU)")
+        
+        if end_frame < source_count:
+            post_overlay_section = source_frames[end_frame:].cpu()  # Move to CPU immediately
+            logger.info(f"   Post-overlay section: {post_overlay_section.shape[0]} frames (CPU)")
+        
+        # Extract the section that needs overlay processing (keep on GPU for processing)
+        overlay_section = source_frames[start_frame:end_frame]
+        logger.info(f"   Overlay section: {overlay_section.shape[0]} frames (GPU processing)")
+        
+        # Process overlay section in chunks for memory efficiency
+        logger.info(f"⚙️ Processing overlay section with chunk size: {chunk_size}")
         result_chunks = []
         
-        for start_idx in range(0, min_frames, chunk_size):
-            end_idx = min(start_idx + chunk_size, min_frames)
-            
-            source_chunk = source_frames[start_idx:end_idx]
-            overlay_chunk = resized_overlay[start_idx:end_idx]
-            
-            logger.info(f"   Processing frames {start_idx}-{end_idx-1}")
-            
-            # Apply overlay to this chunk
-            composite_chunk = self._composite_chunk(
-                source_chunk, overlay_chunk, pos_x, pos_y, 
-                base_opacity, respect_alpha, overlay_has_alpha,
-                opacity_settings
-            )
-            
-            result_chunks.append(composite_chunk)
-            
-            # Clear cache
-            if source_frames.device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
-                torch.mps.empty_cache()
-            elif source_frames.device.type == "cuda":
-                torch.cuda.empty_cache()
+        # Check available memory and adjust chunk size if needed  
+        if original_device.type == "mps":
+            try:
+                # Try to detect memory pressure
+                if overlay_duration_frames > 100 and chunk_size > 3:
+                    logger.warning(f"⚠️ Large overlay section detected, reducing chunk size to 3 for memory safety")
+                    chunk_size = 3
+            except:
+                pass
         
-        # Concatenate results
-        logger.info(f"🔗 Concatenating {len(result_chunks)} processed chunks...")
-        composite_frames = torch.cat(result_chunks, dim=0)
+        for start_idx in range(0, overlay_duration_frames, chunk_size):
+            end_idx = min(start_idx + chunk_size, overlay_duration_frames)
+            
+            try:
+                # Extract chunks from overlay section (not full source)
+                source_chunk = overlay_section[start_idx:end_idx]
+                overlay_chunk = resized_overlay[start_idx:end_idx]
+                
+                logger.info(f"   Processing overlay frames {start_idx}-{end_idx-1}")
+                
+                # Apply overlay to this chunk
+                composite_chunk = self._composite_chunk(
+                    source_chunk, overlay_chunk, pos_x, pos_y, 
+                    base_opacity, respect_alpha, overlay_has_alpha,
+                    opacity_settings
+                )
+                
+                # Move chunk to CPU immediately to free GPU memory
+                composite_chunk_cpu = composite_chunk.cpu()
+                result_chunks.append(composite_chunk_cpu)
+                
+                # Explicitly delete GPU tensors to free memory
+                del composite_chunk
+                del source_chunk
+                del overlay_chunk
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.error(f"🔴 GPU memory error at frames {start_idx}-{end_idx-1}")
+                    
+                    # Try to recover by clearing memory and retrying with smaller chunk
+                    if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                        torch.mps.empty_cache()
+                    elif original_device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    
+                    # Retry with single frame processing
+                    logger.warning(f"   Retrying frame-by-frame for this chunk...")
+                    for frame_idx in range(start_idx, end_idx):
+                        source_single = overlay_section[frame_idx:frame_idx+1]
+                        overlay_single = resized_overlay[frame_idx:frame_idx+1]
+                        
+                        composite_single = self._composite_chunk(
+                            source_single, overlay_single, pos_x, pos_y,
+                            base_opacity, respect_alpha, overlay_has_alpha,
+                            opacity_settings
+                        )
+                        result_chunks.append(composite_single.cpu())
+                        del composite_single
+                        
+                        if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                            torch.mps.empty_cache()
+                else:
+                    raise  # Re-raise if not memory error
+            
+            # Aggressively clear cache after each chunk
+            if original_device.type == "mps":
+                if hasattr(torch.mps, 'empty_cache'):
+                    torch.mps.empty_cache()
+                if hasattr(torch.mps, 'synchronize'):
+                    torch.mps.synchronize()
+            elif original_device.type == "cuda":
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        
+        # Concatenate processed overlay section on CPU
+        logger.info(f"🔗 Concatenating {len(result_chunks)} processed overlay chunks on CPU...")
+        processed_overlay_section = torch.cat(result_chunks, dim=0)
+        
+        # Clear the chunks list to free memory
+        del result_chunks
+        
+        # Combine all video segments: pre + overlay + post
+        logger.info(f"🎬 Assembling final video from segments...")
+        final_segments = []
+        
+        if pre_overlay_section is not None:
+            final_segments.append(pre_overlay_section)
+            logger.info(f"   Added pre-overlay section: {pre_overlay_section.shape[0]} frames")
+        
+        final_segments.append(processed_overlay_section)
+        logger.info(f"   Added processed overlay section: {processed_overlay_section.shape[0]} frames")
+        
+        if post_overlay_section is not None:
+            final_segments.append(post_overlay_section)
+            logger.info(f"   Added post-overlay section: {post_overlay_section.shape[0]} frames")
+        
+        # Final concatenation on CPU
+        composite_frames_cpu = torch.cat(final_segments, dim=0)
+        logger.info(f"✓ Final video: {composite_frames_cpu.shape[0]} frames")
+        
+        # Clean up segments
+        del final_segments
+        if pre_overlay_section is not None:
+            del pre_overlay_section
+        del processed_overlay_section
+        if post_overlay_section is not None:
+            del post_overlay_section
+        
+        # Move back to original device if needed (only for ComfyUI compatibility)
+        if original_device.type != "cpu":
+            logger.info(f"   Moving final result back to {original_device.type}...")
+            composite_frames = composite_frames_cpu.to(original_device)
+            del composite_frames_cpu
+            
+            # Final cache clear
+            if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                torch.mps.empty_cache()
+            elif original_device.type == "cuda":
+                torch.cuda.empty_cache()
+        else:
+            composite_frames = composite_frames_cpu
         
         # Ensure ComfyUI format
         composite_frames_comfy = tensor_to_video_frames(composite_frames)
         
-        # Create info string
+        # Create info string with time-based details
         alpha_info = f"Alpha: {overlay_has_alpha}" if respect_alpha else "Alpha: ignored"
+        time_info = f"Time: {start_frame/fps:.2f}s-{end_frame/fps:.2f}s ({overlay_duration_frames} frames)"
         overlay_info = f"Video Overlay: {overlay_mode} mode | " \
-                      f"Frames: {min_frames} | " \
+                      f"Total: {composite_frames.shape[0]} frames | " \
                       f"Size: {source_width}x{source_height} | " \
                       f"Opacity: {base_opacity} | " \
+                      f"{time_info} | " \
                       f"{alpha_info}"
         
-        logger.info(f"✅ Video overlay complete: {min_frames} frames")
+        logger.info(f"✅ Time-based video overlay complete: {composite_frames.shape[0]} total frames, {overlay_duration_frames} overlay frames")
         
         return (
             composite_frames_comfy,
             overlay_info,
-            min_frames,
+            composite_frames.shape[0],  # Total frame count
             fps
         )
     
