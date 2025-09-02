@@ -53,6 +53,18 @@ class RajSubtitleEngine:
                     "max": 120.0,
                     "step": 0.1,
                     "tooltip": "Video frame rate"
+                }),
+                "frame_width": ("INT", {
+                    "default": 1920,
+                    "min": 100,
+                    "max": 4000,
+                    "tooltip": "Frame width in pixels"
+                }),
+                "frame_height": ("INT", {
+                    "default": 1080,
+                    "min": 100,
+                    "max": 4000,
+                    "tooltip": "Frame height in pixels"
                 })
             },
             "optional": {
@@ -85,23 +97,42 @@ class RajSubtitleEngine:
                     "max": 1000,
                     "tooltip": "Height of the subtitle box for area-based grouping"
                 }),
-                "frame_padding_width": ("INT", {
-                    "default": 0,
+                "frame_padding_left": ("INT", {
+                    "default": 20,
                     "min": 0,
                     "max": 200,
-                    "tooltip": "Extra width added to frame for better text spacing (useful for large highlights)"
+                    "tooltip": "Left frame padding for text positioning and frame expansion"
                 }),
-                "frame_padding_height": ("INT", {
-                    "default": 0,
+                "frame_padding_right": ("INT", {
+                    "default": 20,
                     "min": 0,
-                    "max": 100,
-                    "tooltip": "Extra height added to frame for better text spacing (useful for large highlights)"
+                    "max": 200,
+                    "tooltip": "Right frame padding for text positioning and frame expansion"
+                }),
+                "frame_padding_top": ("INT", {
+                    "default": 20,
+                    "min": 0,
+                    "max": 200,
+                    "tooltip": "Top frame padding for text positioning and frame expansion"
+                }),
+                "frame_padding_bottom": ("INT", {
+                    "default": 20,
+                    "min": 0,
+                    "max": 200,
+                    "tooltip": "Bottom frame padding for text positioning and frame expansion"
+                }),
+                "line_gaps": ("FLOAT", {
+                    "default": 1.2,
+                    "min": 0.5,
+                    "max": 3.0,
+                    "step": 0.1,
+                    "tooltip": "Line spacing multiplier for text lines"
                 })
             }
         }
     
-    RETURN_TYPES = ("IMAGE", "INT", "STRING", "DICT")
-    RETURN_NAMES = ("subtitle_images", "total_frames", "timing_info", "frame_metadata")
+    RETURN_TYPES = ("IMAGE", "INT", "STRING", "DICT", "STRING")
+    RETURN_NAMES = ("subtitle_images", "total_frames", "timing_info", "frame_metadata", "bg_hexcode")
     FUNCTION = "generate_subtitle_video"
     CATEGORY = "Raj Video Processing 🎬/Subtitles"
     
@@ -112,38 +143,49 @@ class RajSubtitleEngine:
                               word_timings: List[Dict],
                               base_settings: Dict,
                               video_fps: float,
+                              frame_width: int,
+                              frame_height: int,
                               highlight_settings: Optional[Dict] = None,
                               max_lines: int = 2,
                               use_line_groups: bool = False,
                               use_area_based_grouping: bool = False,
                               box_width: int = 800,
                               box_height: int = 200,
-                              frame_padding_width: int = 0,
-                              frame_padding_height: int = 0) -> Tuple[torch.Tensor, int, str, Dict]:
+                              frame_padding_left: int = 20,
+                              frame_padding_right: int = 20,
+                              frame_padding_top: int = 20,
+                              frame_padding_bottom: int = 20,
+                              line_gaps: float = 1.2) -> Tuple[torch.Tensor, int, str, Dict, str]:
         """
         Generate subtitle video frames with word grouping, line grouping, or area-based grouping.
         
         Args:
             word_timings: Word timing data from RajWhisperProcess
-            base_settings: Main subtitle styling settings (includes dimensions and font config)
+            base_settings: Main subtitle styling settings (font config, colors, effects)
             video_fps: Video frame rate
+            frame_width: Frame width in pixels
+            frame_height: Frame height in pixels
             highlight_settings: Optional word highlighting settings
             max_lines: Maximum lines to display simultaneously (for non-area-based modes)
             use_line_groups: If True, use line groups (word groups -> lines -> frames)
             use_area_based_grouping: If True, use area-based grouping (fit words in box dimensions)
             box_width: Width of subtitle box for area-based grouping
             box_height: Height of subtitle box for area-based grouping
-            frame_padding_width: Extra width added to frame for better text spacing (0-200px)
-            frame_padding_height: Extra height added to frame for better text spacing (0-100px)
+            frame_padding_left: Left frame padding for text positioning and frame expansion (0-200px)
+            frame_padding_right: Right frame padding for text positioning and frame expansion (0-200px)
+            frame_padding_top: Top frame padding for text positioning and frame expansion (0-200px)
+            frame_padding_bottom: Bottom frame padding for text positioning and frame expansion (0-200px)
+            line_gaps: Line spacing multiplier for text lines (0.5-3.0)
             
         Frame Sizing:
-            - Base dimensions come from base_settings.output_config
-            - Manual padding is added via frame_padding_width/height parameters
+            - Frame dimensions are explicitly provided via frame_width/frame_height parameters
+            - Individual frame padding controls both frame expansion and text positioning
             - Auto-padding is applied when highlight text is >30% larger than base text
-            - Final frame size = base_size + manual_padding + auto_padding
+            - Final frame size = frame_size + frame_padding + auto_padding
+            - Text positioning respects frame padding boundaries
             
         Returns:
-            Tuple of (video_frames_tensor, total_frames, timing_info, metadata)
+            Tuple of (video_frames_tensor, total_frames, timing_info, metadata, bg_hexcode)
         """
         logger.info(f"Starting subtitle video generation with {len(word_timings)} words at {video_fps}fps")
         
@@ -164,10 +206,13 @@ class RajSubtitleEngine:
         
         logger.info(f"Generating {total_frames} frames for {total_duration:.2f}s duration")
         
-        # Get dimensions from base_settings output_config (where text generator stores them)
+        # Use explicit frame dimensions instead of base_settings dimensions
+        display_width = frame_width
+        display_height = frame_height
+        
+        # Get background color from base_settings (standardized to 'background_color')
         output_config = base_settings.get('output_config', {})
-        display_width = output_config.get('output_width', 512)
-        display_height = output_config.get('output_height', 256)
+        bg_hexcode = output_config.get('background_color', output_config.get('bg_color', '#000000'))
         
         # Get font and layout configuration
         font_config = base_settings.get('font_config', {})
@@ -177,8 +222,10 @@ class RajSubtitleEngine:
         logger.info(f"Base dimensions from settings: {display_width}x{display_height}")
         
         # Add smart padding detection for large highlights
-        auto_padding_width = 0
-        auto_padding_height = 0
+        auto_padding_left = 0
+        auto_padding_right = 0
+        auto_padding_top = 0
+        auto_padding_bottom = 0
         if highlight_settings:
             highlight_font_config = highlight_settings.get('font_config', {})
             base_font_size = font_config.get('font_size', 20)
@@ -187,24 +234,27 @@ class RajSubtitleEngine:
             # Auto-suggest padding for significantly larger highlight text
             if highlight_font_size > base_font_size * 1.3:
                 size_diff = highlight_font_size - base_font_size
-                auto_padding_width = min(int(size_diff * 2), 50)  # Max 50px auto padding
-                auto_padding_height = min(int(size_diff * 1), 25)  # Max 25px auto padding
-                logger.info(f"Large highlight detected ({highlight_font_size}px vs {base_font_size}px), suggesting auto padding: {auto_padding_width}x{auto_padding_height}")
+                auto_padding_horizontal = min(int(size_diff * 2), 50)  # Max 50px auto padding
+                auto_padding_vertical = min(int(size_diff * 1), 25)  # Max 25px auto padding
+                auto_padding_left = auto_padding_right = auto_padding_horizontal
+                auto_padding_top = auto_padding_bottom = auto_padding_vertical
+                logger.info(f"Large highlight detected ({highlight_font_size}px vs {base_font_size}px), suggesting auto padding: {auto_padding_horizontal}x{auto_padding_vertical}")
         
-        # Calculate final frame dimensions with padding
-        total_padding_width = frame_padding_width + auto_padding_width
-        total_padding_height = frame_padding_height + auto_padding_height
+        # Calculate final frame dimensions with individual padding
+        total_padding_left = frame_padding_left + auto_padding_left
+        total_padding_right = frame_padding_right + auto_padding_right
+        total_padding_top = frame_padding_top + auto_padding_top
+        total_padding_bottom = frame_padding_bottom + auto_padding_bottom
         
-        final_width = display_width + total_padding_width
-        final_height = display_height + total_padding_height
+        final_width = display_width + total_padding_left + total_padding_right
+        final_height = display_height + total_padding_top + total_padding_bottom
         
-        logger.info(f"Final frame dimensions: {final_width}x{final_height} (added padding: {total_padding_width}x{total_padding_height})")
+        logger.info(f"Final frame dimensions: {final_width}x{final_height} (padding: L{total_padding_left} R{total_padding_right} T{total_padding_top} B{total_padding_bottom})")
         
         # Create grouping based on selected mode
         if use_area_based_grouping:
             # Area-based grouping mode: fit words based on box dimensions
             margin_y = layout_config.get('margin_y', 20)
-            line_spacing = layout_config.get('line_spacing', 1.2)
             
             area_groups = create_area_based_word_groups(
                 parsed_words,
@@ -213,7 +263,7 @@ class RajSubtitleEngine:
                 font_config,
                 margin_x,
                 margin_y,
-                line_spacing
+                line_gaps
             )
             timing_windows = create_timing_windows_area_based(area_groups, video_fps)
             logger.info(f"Using area-based grouping mode: {len(area_groups)} area groups for {box_width}x{box_height}px box")
@@ -278,7 +328,12 @@ class RajSubtitleEngine:
                         base_settings,
                         highlight_settings,
                         output_width,
-                        output_height
+                        output_height,
+                        total_padding_left,
+                        total_padding_right,
+                        total_padding_top,
+                        total_padding_bottom,
+                        line_gaps
                     )
                 elif use_line_groups:
                     # Line groups mode: each active group is a line group containing multiple lines
@@ -288,7 +343,12 @@ class RajSubtitleEngine:
                         base_settings,
                         highlight_settings,
                         output_width,
-                        output_height
+                        output_height,
+                        total_padding_left,
+                        total_padding_right,
+                        total_padding_top,
+                        total_padding_bottom,
+                        line_gaps
                     )
                 else:
                     # Original word groups mode
@@ -298,7 +358,12 @@ class RajSubtitleEngine:
                         base_settings,
                         highlight_settings,
                         output_width,
-                        output_height
+                        output_height,
+                        total_padding_left,
+                        total_padding_right,
+                        total_padding_top,
+                        total_padding_bottom,
+                        line_gaps
                     )
             else:
                 # Empty frame
@@ -393,11 +458,20 @@ class RajSubtitleEngine:
         elif use_line_groups:
             metadata["line_groups"] = len(line_groups)
         
+        # Add padding information to metadata
+        metadata.update({
+            "frame_padding_left": total_padding_left,
+            "frame_padding_right": total_padding_right,
+            "frame_padding_top": total_padding_top,
+            "frame_padding_bottom": total_padding_bottom,
+            "line_gaps": line_gaps
+        })
+        
         frame_metadata.update(metadata)
         
         logger.info(f"Successfully generated subtitle images: {total_frames} frames, {total_duration:.2f}s")
         
-        return (frames_tensor, total_frames, timing_info, frame_metadata)
+        return (frames_tensor, total_frames, timing_info, frame_metadata, bg_hexcode)
     
     def generate_subtitle_keyframes(self,
                                   word_timings: List[Dict],
@@ -454,7 +528,6 @@ class RajSubtitleEngine:
         if use_area_based_grouping:
             # Area-based grouping mode
             margin_y = layout_config.get('margin_y', 20)
-            line_spacing = layout_config.get('line_spacing', 1.2)
             
             word_groups = create_area_based_word_groups(
                 parsed_words,
@@ -463,7 +536,7 @@ class RajSubtitleEngine:
                 font_config,
                 margin_x,
                 margin_y,
-                line_spacing
+                line_gaps
             )
             grouping_mode = "area_based"
             
@@ -652,20 +725,23 @@ class RajSubtitleEngine:
                 group_info = {}
             else:
                 # Generate frame with content
+                # Use default padding values for keyframe generation
+                default_padding = 20
+                default_line_gaps = 1.2
                 if use_area_based_grouping:
                     frame_array = self._generate_frame_with_area_groups(
                         active_groups, timestamp, base_settings, highlight_settings,
-                        output_width, output_height
+                        output_width, output_height, default_padding, default_padding, default_padding, default_padding, default_line_gaps
                     )
                 elif use_line_groups:
                     frame_array = self._generate_frame_with_line_groups(
                         active_groups, timestamp, base_settings, highlight_settings,
-                        output_width, output_height
+                        output_width, output_height, default_padding, default_padding, default_padding, default_padding, default_line_gaps
                     )
                 else:
                     frame_array = self._generate_frame_with_groups(
                         active_groups, timestamp, base_settings, highlight_settings,
-                        output_width, output_height
+                        output_width, output_height, default_padding, default_padding, default_padding, default_padding, default_line_gaps
                     )
                 
                 # Extract active text and group info
@@ -706,8 +782,8 @@ class RajSubtitleEngine:
                 "grouping_mode": grouping_mode,
                 "group_info": group_info,
                 "frame_dimensions": f"{output_width}x{output_height}",
-                "base_dimensions": f"{display_width}x{display_height}",
-                "padding_applied": f"{total_padding_width}x{total_padding_height}",
+                "base_dimensions": f"{output_width}x{output_height}",
+                "padding_applied": f"{default_padding}x{default_padding}",
                 "has_highlighting": highlight_settings is not None and highlighted_word is not None
             }
             
@@ -723,7 +799,12 @@ class RajSubtitleEngine:
                                   base_settings: Dict,
                                   highlight_settings: Optional[Dict],
                                   output_width: int,
-                                  output_height: int) -> np.ndarray:
+                                  output_height: int,
+                                  frame_padding_left: int = 20,
+                                  frame_padding_right: int = 20,
+                                  frame_padding_top: int = 20,
+                                  frame_padding_bottom: int = 20,
+                                  line_gaps: float = 1.2) -> np.ndarray:
         """Generate a single frame with word groups."""
         
         # Create text lines from active groups
@@ -756,7 +837,12 @@ class RajSubtitleEngine:
                 base_settings=base_settings,
                 highlight_settings=highlight_settings,
                 output_width=output_width,
-                output_height=output_height
+                output_height=output_height,
+                frame_padding_left=frame_padding_left,
+                frame_padding_right=frame_padding_right,
+                frame_padding_top=frame_padding_top,
+                frame_padding_bottom=frame_padding_bottom,
+                line_gaps=line_gaps
             )
         else:
             if not highlight_settings:
@@ -766,7 +852,7 @@ class RajSubtitleEngine:
         
         # No highlighting, use standard rendering
         logger.debug(f"Frame {current_time:.2f}s: using standard rendering (no highlighting)")
-        return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
+        return self._render_text_with_settings(full_text, base_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
     
     def _generate_frame_with_line_groups(self,
                                        active_line_groups: List[Dict],
@@ -774,7 +860,12 @@ class RajSubtitleEngine:
                                        base_settings: Dict,
                                        highlight_settings: Optional[Dict],
                                        output_width: int,
-                                       output_height: int) -> np.ndarray:
+                                       output_height: int,
+                                       frame_padding_left: int = 20,
+                                       frame_padding_right: int = 20,
+                                       frame_padding_top: int = 20,
+                                       frame_padding_bottom: int = 20,
+                                       line_gaps: float = 1.2) -> np.ndarray:
         """Generate a single frame with line groups (each containing multiple lines)."""
         
         if not active_line_groups:
@@ -808,11 +899,16 @@ class RajSubtitleEngine:
                     base_settings=base_settings,
                     highlight_settings=highlight_settings,
                     output_width=output_width,
-                    output_height=output_height
+                    output_height=output_height,
+                    frame_padding_left=frame_padding_left,
+                    frame_padding_right=frame_padding_right,
+                    frame_padding_top=frame_padding_top,
+                    frame_padding_bottom=frame_padding_bottom,
+                    line_gaps=line_gaps
                 )
         
         # No highlighting, use standard rendering
-        return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
+        return self._render_text_with_settings(full_text, base_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
     
     def _generate_frame_with_area_groups(self,
                                        active_area_groups: List[Dict],
@@ -820,7 +916,12 @@ class RajSubtitleEngine:
                                        base_settings: Dict,
                                        highlight_settings: Optional[Dict],
                                        output_width: int,
-                                       output_height: int) -> np.ndarray:
+                                       output_height: int,
+                                       frame_padding_left: int = 20,
+                                       frame_padding_right: int = 20,
+                                       frame_padding_top: int = 20,
+                                       frame_padding_bottom: int = 20,
+                                       line_gaps: float = 1.2) -> np.ndarray:
         """Generate a single frame with area-based groups (each containing multiple lines fitted to box)."""
         
         if not active_area_groups:
@@ -852,11 +953,16 @@ class RajSubtitleEngine:
                     base_settings=base_settings,
                     highlight_settings=highlight_settings,
                     output_width=output_width,
-                    output_height=output_height
+                    output_height=output_height,
+                    frame_padding_left=frame_padding_left,
+                    frame_padding_right=frame_padding_right,
+                    frame_padding_top=frame_padding_top,
+                    frame_padding_bottom=frame_padding_bottom,
+                    line_gaps=line_gaps
                 )
         
         # No highlighting, use standard rendering
-        return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
+        return self._render_text_with_settings(full_text, base_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
     
     def _generate_frame_with_words(self,
                                  active_words: List[Dict],
@@ -926,7 +1032,7 @@ class RajSubtitleEngine:
         
         return frame.astype(np.uint8)
     
-    def _render_text_with_settings(self, text: str, settings: Dict, output_width: int = None, output_height: int = None) -> np.ndarray:
+    def _render_text_with_settings(self, text: str, settings: Dict, output_width: int = None, output_height: int = None, frame_padding_left: int = 20, frame_padding_right: int = 20, frame_padding_top: int = 20, frame_padding_bottom: int = 20, line_gaps: float = 1.2) -> np.ndarray:
         """Render text using the text generator with given settings."""
         try:
             # Extract all parameters from settings
@@ -955,10 +1061,10 @@ class RajSubtitleEngine:
                 vertical_align=layout_config.get('vertical_align', 'middle'),
                 words_per_line=layout_config.get('words_per_line', 0),
                 max_lines=layout_config.get('max_lines', 0),
-                line_spacing=layout_config.get('line_spacing', 1.2),
+                line_spacing=line_gaps,
                 letter_spacing=layout_config.get('letter_spacing', 0),
-                margin_x=layout_config.get('margin_x', 20),
-                margin_y=layout_config.get('margin_y', 20),
+                margin_x=frame_padding_left,
+                margin_y=frame_padding_top,
                 auto_size=layout_config.get('auto_size', False),
                 base_opacity=output_config.get('base_opacity', 1.0),
                 font_file=font_config.get('font_file', ''),
@@ -1008,7 +1114,12 @@ class RajSubtitleEngine:
                                            base_settings: Dict,
                                            highlight_settings: Dict,
                                            output_width: int,
-                                           output_height: int) -> np.ndarray:
+                                           output_height: int,
+                                           frame_padding_left: int = 20,
+                                           frame_padding_right: int = 20,
+                                           frame_padding_top: int = 20,
+                                           frame_padding_bottom: int = 20,
+                                           line_gaps: float = 1.2) -> np.ndarray:
         """Render text with precise word highlighting using calculated positions."""
         
         logger.debug(f"Mixed rendering: text='{full_text[:50]}...', highlighted='{highlighted_word.get('word', '') if highlighted_word else None}'")
@@ -1016,7 +1127,7 @@ class RajSubtitleEngine:
         if not highlighted_word:
             # No highlighting needed, use standard rendering
             logger.debug("No highlighted word, falling back to standard rendering")
-            return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
+            return self._render_text_with_settings(full_text, base_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
         
         try:
             # Use dynamic rendering for clean highlighting without duplication
@@ -1032,13 +1143,18 @@ class RajSubtitleEngine:
                 base_settings=base_settings,
                 highlight_settings=highlight_settings,
                 output_width=output_width,
-                output_height=output_height
+                output_height=output_height,
+                frame_padding_left=frame_padding_left,
+                frame_padding_right=frame_padding_right,
+                frame_padding_top=frame_padding_top,
+                frame_padding_bottom=frame_padding_bottom,
+                line_gaps=line_gaps
             )
             
         except Exception as e:
             logger.warning(f"Error in mixed text highlighting: {e}")
             # Fallback to base rendering
-            return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
+            return self._render_text_with_settings(full_text, base_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
     
     def _render_text_with_dynamic_highlighting(self,
                                              full_text: str,
@@ -1048,7 +1164,12 @@ class RajSubtitleEngine:
                                              base_settings: Dict,
                                              highlight_settings: Dict,
                                              output_width: int,
-                                             output_height: int) -> np.ndarray:
+                                             output_height: int,
+                                             frame_padding_left: int = 20,
+                                             frame_padding_right: int = 20,
+                                             frame_padding_top: int = 20,
+                                             frame_padding_bottom: int = 20,
+                                             line_gaps: float = 1.2) -> np.ndarray:
         """Render text with dynamic word-level highlighting in a single pass.
         
         Enhanced features:
@@ -1082,9 +1203,9 @@ class RajSubtitleEngine:
             layout_config = base_settings.get('layout_config', {})
             output_config = base_settings.get('output_config', {})
             
-            # Get colors
+            # Get colors (standardized to use 'background_color')
             base_color = font_config.get('color', '#000000')
-            bg_color = output_config.get('bg_color', '#FFFFFF')
+            bg_color = output_config.get('background_color', output_config.get('bg_color', '#000000'))
             highlight_font_config = highlight_settings.get('font_config', {})
             highlight_color = highlight_font_config.get('color', '#0000FF')
             
@@ -1135,23 +1256,24 @@ class RajSubtitleEngine:
             highlight_layout_config = highlight_settings.get('layout_config', {})
             text_align = layout_config.get('alignment', 'center')
             
-            # Use highlight-specific margins if provided, fallback to base margins
-            margin_x = highlight_layout_config.get('margin_x', layout_config.get('margin_x', 10))
-            margin_y = highlight_layout_config.get('margin_y', layout_config.get('margin_y', 10))
-            margin_width = highlight_layout_config.get('margin_width', margin_x)  # Additional margin width for highlights
-            margin_height = highlight_layout_config.get('margin_height', margin_y)  # Additional margin height for highlights
+            # Use individual frame padding values for precise control
+            margin_x = frame_padding_left
+            margin_y = frame_padding_top
+            margin_width = highlight_layout_config.get('margin_width', 0)  # Additional margin width for highlights
+            margin_height = highlight_layout_config.get('margin_height', 0)  # Additional margin height for highlights
             
-            line_spacing = layout_config.get('line_spacing', 1.2)
+            line_spacing = line_gaps
             
             logger.debug(f"Using margins - base: ({margin_x}, {margin_y}), highlight extra: ({margin_width}, {margin_height})")
             
             # Calculate line height
             line_height = int(font_size * line_spacing)
             
-            # Calculate starting Y position for vertical centering
+            # Calculate starting Y position for vertical centering with frame padding
             total_text_height = len(lines) * line_height
-            start_y = (output_height - total_text_height) // 2
-            start_y = max(margin_y, start_y)
+            available_height = output_height - frame_padding_top - frame_padding_bottom
+            start_y = frame_padding_top + (available_height - total_text_height) // 2
+            start_y = max(frame_padding_top, start_y)
             
             # Render each line
             for line_idx, line_text in enumerate(lines):
@@ -1167,15 +1289,15 @@ class RajSubtitleEngine:
                     word_width = draw.textbbox((0, 0), word + " ", font=base_font)[2]
                     line_width += word_width
                 
-                # Calculate starting X position based on alignment
+                # Calculate starting X position based on alignment with frame padding
                 if text_align == 'center':
                     start_x = (output_width - line_width) // 2
                 elif text_align == 'right':
-                    start_x = output_width - line_width - margin_x
+                    start_x = output_width - line_width - frame_padding_right
                 else:  # left
-                    start_x = margin_x
+                    start_x = frame_padding_left
                 
-                start_x = max(margin_x, start_x)
+                start_x = max(frame_padding_left, start_x)
                 
                 # Render each word in the line
                 current_x = start_x
@@ -1222,7 +1344,7 @@ class RajSubtitleEngine:
         except Exception as e:
             logger.error(f"Error in dynamic highlighting: {e}")
             # Fallback to base rendering
-            return self._render_text_with_settings(full_text, base_settings, output_width, output_height)
+            return self._render_text_with_settings(full_text, base_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
     
     def _load_system_font(self, font_name: str, font_size: int) -> ImageFont.FreeTypeFont:
         """Load a system font or return default."""
