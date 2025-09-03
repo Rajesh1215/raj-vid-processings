@@ -188,9 +188,8 @@ class RajVideoOverlay:
         # Early exit if no overlay needed
         if overlay_duration_frames <= 0:
             logger.warning("⚠️ No overlay duration specified, returning original video")
-            composite_frames_comfy = tensor_to_video_frames(source_frames)
             overlay_info = "Video Overlay: No overlay applied (zero duration)"
-            return (composite_frames_comfy, overlay_info, source_count, fps)
+            return (source_frames, overlay_info, source_count, fps)
         
         # Synchronize overlay frame count with overlay duration
         if overlay_count < overlay_duration_frames:
@@ -267,10 +266,22 @@ class RajVideoOverlay:
         # Check available memory and adjust chunk size if needed  
         if original_device.type == "mps":
             try:
-                # Try to detect memory pressure
-                if overlay_duration_frames > 100 and chunk_size > 3:
+                # Calculate total memory requirements for overlay processing
+                frame_pixels = source_width * source_height
+                estimated_memory_gb = (overlay_duration_frames * frame_pixels * 4 * 4) / (1024**3)  # 4 bytes per pixel, 4x multiplier for processing
+                
+                logger.info(f"   Estimated overlay memory requirement: {estimated_memory_gb:.2f} GB")
+                
+                # Apply more conservative chunking for large videos
+                if estimated_memory_gb > 2.0:  # Very large video
+                    chunk_size = max(1, min(1, chunk_size))  # Single frame processing
+                    logger.warning(f"⚠️ Very large overlay section detected ({estimated_memory_gb:.2f} GB), using single-frame processing")
+                elif estimated_memory_gb > 1.0:  # Large video
+                    chunk_size = max(1, min(2, chunk_size))  # 2 frames max
+                    logger.warning(f"⚠️ Large overlay section detected ({estimated_memory_gb:.2f} GB), reducing chunk size to 2")
+                elif overlay_duration_frames > 100 and chunk_size > 3:
+                    chunk_size = max(1, min(3, chunk_size))  # 3 frames max
                     logger.warning(f"⚠️ Large overlay section detected, reducing chunk size to 3 for memory safety")
-                    chunk_size = 3
             except:
                 pass
         
@@ -377,46 +388,45 @@ class RajVideoOverlay:
         # This avoids the large GPU memory allocation for final result
         logger.info(f"   Converting final result on CPU to avoid GPU memory issues")
         
-        try:
-            # Try to convert on CPU first (most memory-efficient)
-            composite_frames_comfy = tensor_to_video_frames(composite_frames_cpu)
-            composite_frames = composite_frames_cpu  # Keep reference for shape info
-            
-            logger.info(f"   ✓ Final conversion completed on CPU")
-            
-        except Exception as e:
-            logger.warning(f"   CPU conversion failed: {e}")
-            
-            # Fallback: try to move to GPU if absolutely necessary
-            # Clear as much GPU memory as possible first
-            if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
-                torch.mps.empty_cache()
-            elif original_device.type == "cuda":
-                torch.cuda.empty_cache()
-                
-            try:
-                logger.info(f"   Attempting GPU conversion with cleared cache...")
-                composite_frames = composite_frames_cpu.to(original_device)
-                composite_frames_comfy = tensor_to_video_frames(composite_frames)
-                del composite_frames_cpu
-                
-                # Clear cache again
+        # For MPS backend, check if we can safely transfer to GPU or should keep on CPU
+        composite_frames_size_gb = (composite_frames_cpu.numel() * 4) / (1024**3)  # float32 = 4 bytes
+        
+        logger.info(f"   Final tensor size: {composite_frames_size_gb:.2f} GB")
+        
+        if original_device != torch.device("cpu"):
+            # Apply more conservative memory management for MPS
+            if original_device.type == "mps" and composite_frames_size_gb > 1.5:
+                logger.warning(f"   Large tensor ({composite_frames_size_gb:.2f} GB) detected, keeping on CPU to prevent MPS OOM")
+                composite_frames = composite_frames_cpu
+            else:
+                # Clear GPU memory aggressively before transfer
                 if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
                     torch.mps.empty_cache()
                 elif original_device.type == "cuda":
                     torch.cuda.empty_cache()
+                
+                try:
+                    logger.info(f"   Attempting transfer to {original_device} (size: {composite_frames_size_gb:.2f} GB)")
+                    composite_frames = composite_frames_cpu.to(original_device)
+                    del composite_frames_cpu
                     
-            except RuntimeError as gpu_error:
-                if "out of memory" in str(gpu_error).lower():
-                    logger.error(f"   GPU OOM during final conversion. Processing on CPU...")
+                    # Clear cache immediately after successful transfer
+                    if original_device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
+                        torch.mps.empty_cache()
+                    elif original_device.type == "cuda":
+                        torch.cuda.empty_cache()
                     
-                    # Final fallback: force CPU processing
-                    composite_frames_comfy = tensor_to_video_frames(composite_frames_cpu)
-                    composite_frames = composite_frames_cpu
+                    logger.info(f"   ✓ Final result transferred to {original_device}")
                     
-                    logger.info(f"   ⚠️ Final result kept on CPU due to memory constraints")
-                else:
-                    raise gpu_error
+                except RuntimeError as gpu_error:
+                    if "out of memory" in str(gpu_error).lower():
+                        logger.warning(f"   MPS/GPU OOM transferring {composite_frames_size_gb:.2f} GB tensor, keeping on CPU")
+                        composite_frames = composite_frames_cpu
+                    else:
+                        raise gpu_error
+        else:
+            composite_frames = composite_frames_cpu
+            logger.info(f"   ✓ Final result kept on CPU")
         
         # Create info string with time-based details
         alpha_info = f"Alpha: {overlay_has_alpha}" if respect_alpha else "Alpha: ignored"
@@ -430,10 +440,10 @@ class RajVideoOverlay:
         
         logger.info(f"✅ Time-based video overlay complete: {composite_frames.shape[0]} total frames, {overlay_duration_frames} overlay frames")
         logger.info(f"   Final tensor device: {composite_frames.device.type}")
-        logger.info(f"   Output tensor shape: {composite_frames_comfy.shape}")
+        logger.info(f"   Output tensor shape: {composite_frames.shape}")
         
         return (
-            composite_frames_comfy,
+            composite_frames,
             overlay_info,
             composite_frames.shape[0],  # Total frame count
             fps
