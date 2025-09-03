@@ -82,8 +82,8 @@ class RajVideoChromaKey:
             }
         }
     
-    RETURN_TYPES = ("IMAGE", "IMAGE", "CHROMA_KEY", "STRING", "INT")
-    RETURN_NAMES = ("keyed_frames", "alpha_mask", "chroma_settings", "chroma_info", "frame_count")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "CHROMA_KEY", "STRING", "INT")
+    RETURN_NAMES = ("keyed_frames", "alpha_mask", "background_extract", "chroma_settings", "chroma_info", "frame_count")
     FUNCTION = "chroma_key_removal"
     CATEGORY = "Raj Video Processing 🎬"
     
@@ -107,6 +107,8 @@ class RajVideoChromaKey:
             # Return original frames with full alpha
             logger.info("   Chroma key disabled, returning original frames with full alpha")
             alpha_mask = torch.ones(frame_count, height, width, 1, device=frames.device, dtype=frames.dtype)
+            # When disabled, inverted composite is just black (nothing removed)
+            inverted_composite = torch.zeros(frame_count, height, width, 4, device=frames.device, dtype=frames.dtype)
             keyed_frames = self._ensure_rgba_format(frames, alpha_mask)
             
             chroma_settings = {
@@ -115,7 +117,7 @@ class RajVideoChromaKey:
             }
             
             chroma_info = f"Chroma Key: Disabled | Frames: {frame_count} | Size: {width}x{height}"
-            return (keyed_frames, alpha_mask, chroma_settings, chroma_info, frame_count)
+            return (keyed_frames, alpha_mask, inverted_composite, chroma_settings, chroma_info, frame_count)
         
         # Convert chroma color to normalized values [0,1]
         target_color = torch.tensor([
@@ -130,6 +132,7 @@ class RajVideoChromaKey:
         chunk_size = 10  # Process 10 frames at a time
         alpha_chunks = []
         keyed_chunks = []
+        inverted_composite_chunks = []  # For storing inverted keyframe composites
         
         for start_idx in range(0, frame_count, chunk_size):
             end_idx = min(start_idx + chunk_size, frame_count)
@@ -152,8 +155,14 @@ class RajVideoChromaKey:
             # Create keyed frames (RGBA format)
             keyed_chunk = self._create_keyed_frames(processed_chunk, alpha_chunk, output_format)
             
+            # Create inverted composite (shows what was removed/background)
+            inverted_alpha = 1.0 - alpha_chunk
+            # Apply inverted mask to original frames to show removed background
+            inverted_composite = torch.cat([frame_chunk * inverted_alpha, inverted_alpha], dim=-1)
+            
             alpha_chunks.append(alpha_chunk)
             keyed_chunks.append(keyed_chunk)
+            inverted_composite_chunks.append(inverted_composite)
             
             # Clear cache
             if frames.device.type == "mps" and hasattr(torch.mps, 'empty_cache'):
@@ -165,9 +174,13 @@ class RajVideoChromaKey:
         logger.info(f"🔗 Concatenating {len(alpha_chunks)} processed chunks...")
         final_alpha = torch.cat(alpha_chunks, dim=0)
         final_keyed = torch.cat(keyed_chunks, dim=0)
+        final_inverted_composite = torch.cat(inverted_composite_chunks, dim=0)
+        
+        logger.info(f"   Generated inverted composite (background extraction)")
         
         # Ensure ComfyUI format
         final_alpha_comfy = tensor_to_video_frames(final_alpha)
+        final_inverted_comfy = tensor_to_video_frames(final_inverted_composite)
         final_keyed_comfy = tensor_to_video_frames(final_keyed)
         
         # Create chroma settings for overlay node
@@ -186,11 +199,12 @@ class RajVideoChromaKey:
                      f"Spill: {spill_suppression} | " \
                      f"Frames: {frame_count} | Size: {width}x{height}"
         
-        logger.info(f"✅ Chroma key complete: {frame_count} frames with alpha")
+        logger.info(f"✅ Chroma key complete: {frame_count} frames with alpha + inverted composite")
         
         return (
             final_keyed_comfy,
             final_alpha_comfy,
+            final_inverted_comfy,
             chroma_settings,
             chroma_info,
             frame_count
