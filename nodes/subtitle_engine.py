@@ -398,15 +398,25 @@ class RajSubtitleEngine:
         
         # Convert frames to image batch tensor
         if frames:
-            # Apply standardization to ensure all frames have same format and dimensions
+            # Apply standardization based on background type
             standardized_frames = []
+            bg_color = base_settings.get('output_config', {}).get('background_color', '#000000')
+            is_transparent = bg_color.lower() == 'transparent'
+            
             for i, frame in enumerate(frames):
-                standardized_frame = self._standardize_frame_format(frame, output_width, output_height)
+                if is_transparent:
+                    # For transparent backgrounds, preserve RGBA format - DON'T standardize
+                    if len(frame.shape) == 3 and frame.shape[2] == 4:
+                        standardized_frame = frame  # Keep RGBA as-is
+                    else:
+                        logger.warning(f"Expected RGBA frame for transparent background, got: {frame.shape}")
+                        standardized_frame = frame
+                else:
+                    # For colored backgrounds, standardize to RGB
+                    standardized_frame = self._standardize_frame_format(frame, output_width, output_height)
+                
                 standardized_frames.append(standardized_frame)
                 
-                # Log frame dimensions for debugging
-                if i % 50 == 0 or i < 5 or i >= len(frames) - 5:  # Log first 5, every 50th, and last 5
-                    logger.debug(f"Frame {i} dimensions: {standardized_frame.shape}")
             
             # Validate all frames have consistent dimensions before stacking
             if standardized_frames:
@@ -420,6 +430,7 @@ class RajSubtitleEngine:
             
             # Stack all frames into image batch tensor [num_frames, height, width, channels]
             # Convert to float32 and normalize to 0-1 range for ComfyUI compatibility
+            logger.info(f"Stacking frames: shape={standardized_frames[0].shape}, type={'RGBA' if standardized_frames[0].shape[2]==4 else 'RGB'}, transparent_bg={is_transparent}")
             frames_tensor = torch.stack([
                 torch.from_numpy(frame.astype(np.float32) / 255.0) 
                 for frame in standardized_frames
@@ -463,11 +474,6 @@ class RajSubtitleEngine:
                     frame = self._generate_transparent_empty_frame(output_width, output_height, transparent_settings)
                 
                 # All transparent frame functions ensure RGBA format
-                print(f"Transparent frame {frame_num}: {frame.shape}")
-                print(frame[0,0,3]) # print the alpha channel of the first pixel
-                print(frame[0,0,2]) # print the alpha channel of the first pixel
-                print(frame[0,0,1]) # print the alpha channel of the first pixel
-                print(frame[0,0,0]) # print the alpha channel of the first pixel
                 # Verify frame has expected RGBA format 
                 if len(frame.shape) != 3 or frame.shape[2] != 4:
                     logger.error(f"Transparent frame {frame_num}: Expected RGBA [H,W,4], got {frame.shape}")
@@ -888,12 +894,7 @@ class RajSubtitleEngine:
         
         # Add word highlighting if enabled
         if highlight_settings and all_words:
-            logger.debug(f"Highlighting enabled at {current_time:.2f}s with {len(all_words)} words")
             highlighted_word = get_current_highlighted_word(all_words, current_time)
-            if highlighted_word:
-                logger.info(f"Frame {current_time:.2f}s: highlighting word '{highlighted_word.get('word', '')}'")
-            else:
-                logger.debug(f"Frame {current_time:.2f}s: no word to highlight")
             # Use the new mixed text rendering with precise highlighting
             return self._render_mixed_text_with_highlighting(
                 full_text=full_text,
@@ -910,14 +911,8 @@ class RajSubtitleEngine:
                 frame_padding_bottom=frame_padding_bottom,
                 line_gaps=line_gaps
             )
-        else:
-            if not highlight_settings:
-                logger.debug(f"Frame {current_time:.2f}s: no highlight settings provided")
-            if not all_words:
-                logger.debug(f"Frame {current_time:.2f}s: no words data available")
         
         # No highlighting, use standard rendering
-        logger.debug(f"Frame {current_time:.2f}s: using standard rendering (no highlighting)")
         return self._render_text_with_settings(full_text, base_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
     
     def _generate_frame_with_line_groups(self,
@@ -1455,52 +1450,17 @@ class RajSubtitleEngine:
             # Convert to numpy array
             result_array = np.array(image)
             
-            # Save debug images for testing/validation
-            try:
-                # Save the original PIL image directly
-                debug_filename = f"temp/debug_pil_frame_{current_time:.2f}s.png"
-                image.save(debug_filename)
-                logger.info(f"Saved PIL debug image: {debug_filename}")
-                
-                # For transparent backgrounds, keep RGBA format; for others, standardize to RGB
-                if is_transparent:
-                    # Ensure RGBA format is preserved for transparent backgrounds
-                    if len(result_array.shape) != 3 or result_array.shape[2] != 4:
-                        logger.error(f"Expected RGBA format for transparent background, got: {result_array.shape}")
-                        # Create fallback transparent RGBA frame
-                        result_array = np.zeros((output_height, output_width, 4), dtype=np.uint8)
-                    
-                    # Save numpy array as RGBA image for debugging
-                    from PIL import Image as PILImage
-                    array_image = PILImage.fromarray(result_array, mode='RGBA')
-                    array_debug_filename = f"temp/np_debug_numpy_rgba_{current_time:.2f}s.png"
-                    array_image.save(array_debug_filename)
-                    logger.info(f"Saved numpy RGBA debug image: {array_debug_filename}")
-                    
-                    return result_array
-                else:
-                    # Standardize to RGB format for non-transparent backgrounds
-                    standardized = self._standardize_frame_format(result_array, output_width, output_height)
-                    
-                    # Save numpy array as RGB image for debugging
-                    from PIL import Image as PILImage
-                    array_image = PILImage.fromarray(standardized, mode='RGB')
-                    array_debug_filename = f"debug_numpy_rgb_{current_time:.2f}s.png"
-                    array_image.save(array_debug_filename)
-                    logger.info(f"Saved numpy RGB debug image: {array_debug_filename}")
-                    
-                    return standardized
-                    
-            except Exception as e:
-                logger.error(f"Error saving debug images: {e}")
-                # Continue with normal processing even if debug saving fails
-                if is_transparent:
-                    if len(result_array.shape) != 3 or result_array.shape[2] != 4:
-                        logger.error(f"Expected RGBA format for transparent background, got: {result_array.shape}")
-                        result_array = np.zeros((output_height, output_width, 4), dtype=np.uint8)
-                    return result_array
-                else:
-                    return self._standardize_frame_format(result_array, output_width, output_height)
+            # For transparent backgrounds, keep RGBA format; for others, standardize to RGB
+            if is_transparent:
+                # Ensure RGBA format is preserved for transparent backgrounds
+                if len(result_array.shape) != 3 or result_array.shape[2] != 4:
+                    logger.error(f"Expected RGBA format for transparent background, got: {result_array.shape}")
+                    # Create fallback transparent RGBA frame
+                    result_array = np.zeros((output_height, output_width, 4), dtype=np.uint8)
+                return result_array
+            else:
+                # Standardize to RGB format for non-transparent backgrounds
+                return self._standardize_frame_format(result_array, output_width, output_height)
             
         except Exception as e:
             logger.error(f"Error in dynamic highlighting: {e}")
