@@ -8,7 +8,7 @@ import os
 from typing import List, Dict, Tuple, Optional, Any
 from PIL import Image, ImageDraw, ImageFont
 try:
-    from .utils import logger
+    from ..nodes.utils import logger
 except ImportError:
     # Fallback for standalone testing
     import sys

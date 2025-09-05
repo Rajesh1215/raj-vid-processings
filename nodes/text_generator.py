@@ -271,8 +271,8 @@ class RajTextGenerator:
             }
         }
     
-    RETURN_TYPES = ("IMAGE", "MASK", "TEXT_CONFIG", "STRING", "TEXT_SETTINGS")
-    RETURN_NAMES = ("text_image", "alpha_mask", "text_settings", "render_info", "styling_settings")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "MASK", "TEXT_CONFIG", "STRING", "TEXT_SETTINGS")
+    RETURN_NAMES = ("text_image", "transparent_text", "alpha_mask", "text_settings", "render_info", "styling_settings")
     FUNCTION = "generate_text"
     CATEGORY = "Raj Video Processing 🎬/Text"
     
@@ -989,6 +989,28 @@ class RajTextGenerator:
         image_np = np.array(image).astype(np.float32) / 255.0
         image_tensor = torch.from_numpy(image_np).unsqueeze(0)
         
+        # Create transparent text version (no background, only text with alpha)
+        transparent_image = Image.new('RGBA', (output_width, output_height), (0, 0, 0, 0))
+        if hasattr(image, 'split') and len(image.split()) == 4:
+            # Extract RGB channels from original and alpha channel
+            r, g, b, a = image.split()
+            # Combine with fully transparent background
+            transparent_image = Image.merge('RGBA', (r, g, b, a))
+            # Make background pixels fully transparent
+            transparent_data = list(transparent_image.getdata())
+            bg_r, bg_g, bg_b = self.parse_color(background_color)[:3]
+            # Convert background pixels to transparent
+            for i, (r, g, b, a) in enumerate(transparent_data):
+                # If pixel is close to background color, make it transparent
+                if abs(r - bg_r) < 10 and abs(g - bg_g) < 10 and abs(b - bg_b) < 10:
+                    transparent_data[i] = (r, g, b, 0)
+            transparent_image.putdata(transparent_data)
+        else:
+            transparent_image = image.copy()
+        
+        transparent_np = np.array(transparent_image).astype(np.float32) / 255.0
+        transparent_tensor = torch.from_numpy(transparent_np).unsqueeze(0)
+        
         # Create mask tensor
         mask_np = np.array(alpha_mask).astype(np.float32) / 255.0
         mask_tensor = torch.from_numpy(mask_np).unsqueeze(0)
@@ -1095,7 +1117,7 @@ class RajTextGenerator:
             }
         }
         
-        return (image_tensor, mask_tensor, json.dumps(text_config), render_info, styling_settings)
+        return (image_tensor, transparent_tensor, mask_tensor, json.dumps(text_config), render_info, styling_settings)
 
 
 # Test node

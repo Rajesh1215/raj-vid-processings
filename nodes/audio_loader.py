@@ -1,7 +1,7 @@
 import os
 import torch
 from .utils import logger
-from .audio_utils import AudioProcessor
+from ..utils.audio_utils import AudioProcessor
 
 try:
     import folder_paths

@@ -5,7 +5,7 @@ import os
 import tempfile
 from typing import Dict, List, Tuple, Optional
 from .utils import logger
-from .audio_utils import AudioProcessor
+from ..utils.audio_utils import AudioProcessor
 
 # Try to import whisper
 try:

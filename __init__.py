@@ -18,6 +18,7 @@ try:
     from .nodes.video_resize_toolkit import RajVideoResizeToolkit
     from .nodes.video_opacity_gradient import RajVideoOpacityGradient
     from .nodes.video_chroma_key import RajVideoChromaKey
+    from .nodes.video_reverser import RajVideoReverser
     # Text Generation Nodes
     from .nodes.text_generator import RajTextGenerator
     from .nodes.whisper_captions import RajWhisperCaptions
@@ -35,33 +36,34 @@ try:
     from .nodes.text_to_timing import RajTextToTiming
 except ImportError:
     # Fallback for direct testing
-    from nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
-    from nodes.video_concatenator import RajVideoConcatenator, RajVideoSequencer
-    from nodes.video_saver import RajVideoSaver, RajVideoSaverAdvanced
-    from nodes.video_upload import RajVideoUpload, RajVideoUploadAdvanced
-    from nodes.video_effects import RajVideoEffects, RajVideoSharpness
-    from nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
-    from nodes.video_segmenter import RajVideoSegmenter
-    from nodes.video_mask_composite import RajVideoMaskComposite
-    from nodes.video_overlay import RajVideoOverlay
-    from nodes.video_resize_toolkit import RajVideoResizeToolkit
-    from nodes.video_opacity_gradient import RajVideoOpacityGradient
-    from nodes.video_chroma_key import RajVideoChromaKey
+    from .nodes.video_loader import RajVideoLoader, RajVideoLoaderPath
+    from .nodes.video_concatenator import RajVideoConcatenator, RajVideoSequencer
+    from .nodes.video_saver import RajVideoSaver, RajVideoSaverAdvanced
+    from .nodes.video_upload import RajVideoUpload, RajVideoUploadAdvanced
+    from .nodes.video_effects import RajVideoEffects, RajVideoSharpness
+    from .nodes.video_transitions import RajVideoTransitions, RajTransitionLibrary
+    from .nodes.video_segmenter import RajVideoSegmenter
+    from .nodes.video_mask_composite import RajVideoMaskComposite
+    from .nodes.video_overlay import RajVideoOverlay
+    from .nodes.video_resize_toolkit import RajVideoResizeToolkit
+    from .nodes.video_opacity_gradient import RajVideoOpacityGradient
+    from .nodes.video_chroma_key import RajVideoChromaKey
+    from .nodes.video_reverser import RajVideoReverser
     # Text Generation Nodes
-    from nodes.text_generator import RajTextGenerator
-    from nodes.whisper_captions import RajWhisperCaptions
-    from nodes.text_effects import RajTextEffects
-    from nodes.text_animator import RajTextAnimator
-    from nodes.text_sequencer import RajTextSequencer
-    from nodes.text_compositor import RajTextCompositor
-    from nodes.text_presets import RajTextPresets
+    from .nodes.text_generator import RajTextGenerator
+    from .nodes.whisper_captions import RajWhisperCaptions
+    from .nodes.text_effects import RajTextEffects
+    from .nodes.text_animator import RajTextAnimator
+    from .nodes.text_sequencer import RajTextSequencer
+    from .nodes.text_compositor import RajTextCompositor
+    from .nodes.text_presets import RajTextPresets
     # Audio Processing Nodes
-    from nodes.whisper_process import RajWhisperProcess
-    from nodes.audio_loader import RajAudioLoader, RajAudioProcessor
-    from nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
+    from .nodes.whisper_process import RajWhisperProcess
+    from .nodes.audio_loader import RajAudioLoader, RajAudioProcessor
+    from .nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
     # Subtitle System Nodes
-    from nodes.subtitle_engine import RajSubtitleEngine
-    from nodes.text_to_timing import RajTextToTiming
+    from .nodes.subtitle_engine import RajSubtitleEngine
+    from .nodes.text_to_timing import RajTextToTiming
 
 # Node class mappings for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -83,6 +85,7 @@ NODE_CLASS_MAPPINGS = {
     "RajVideoResizeToolkit": RajVideoResizeToolkit,
     "RajVideoOpacityGradient": RajVideoOpacityGradient,
     "RajVideoChromaKey": RajVideoChromaKey,
+    "RajVideoReverser": RajVideoReverser,
     # Text Generation Nodes
     "RajTextGenerator": RajTextGenerator,
     "RajWhisperCaptions": RajWhisperCaptions,
@@ -122,6 +125,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajVideoResizeToolkit": "🔧 Raj Video Resize Toolkit",
     "RajVideoOpacityGradient": "🌈 Raj Video Opacity Gradient",
     "RajVideoChromaKey": "🎬 Raj Video Chroma Key",
+    "RajVideoReverser": "🔄 Raj Video Reverser",
     # Text Generation Nodes
     "RajTextGenerator": "📝 Raj Text Generator",
     "RajWhisperCaptions": "🎤 Raj Whisper Captions",

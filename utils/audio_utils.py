@@ -3,7 +3,7 @@ import numpy as np
 import tempfile
 import os
 from typing import Dict, Tuple, Optional, Union
-from .utils import logger
+from ..nodes.utils import logger
 
 # Function to safely import libraries with detailed error info
 def safe_import(module_name, from_module=None):

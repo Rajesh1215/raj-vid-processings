@@ -2,7 +2,7 @@ import os
 import torch
 import cv2
 from .utils import get_optimal_device, video_to_tensor, tensor_to_video_frames, logger
-from .audio_utils import AudioProcessor
+from ..utils.audio_utils import AudioProcessor
 
 try:
     import folder_paths

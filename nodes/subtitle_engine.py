@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import json
 from typing import List, Dict, Optional, Tuple, Any
 from .utils import logger
-from .subtitle_utils import (
+from ..utils.subtitle_utils import (
     parse_whisper_word_data,
     get_total_duration,
     get_active_words_at_time,
