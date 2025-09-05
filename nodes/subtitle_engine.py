@@ -9,7 +9,7 @@ import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import json
 from typing import List, Dict, Optional, Tuple, Any
-from .utils import logger
+from .utils import logger, tensor_to_video_frames
 from ..utils.subtitle_utils import (
     parse_whisper_word_data,
     get_total_duration,
@@ -131,8 +131,8 @@ class RajSubtitleEngine:
             }
         }
     
-    RETURN_TYPES = ("IMAGE", "INT", "STRING", "DICT", "STRING")
-    RETURN_NAMES = ("subtitle_images", "total_frames", "timing_info", "frame_metadata", "bg_hexcode")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "INT", "STRING", "DICT", "STRING")
+    RETURN_NAMES = ("subtitle_images", "transparent_subtitles", "total_frames", "timing_info", "frame_metadata", "bg_hexcode")
     FUNCTION = "generate_subtitle_video"
     CATEGORY = "Raj Video Processing 🎬/Subtitles"
     
@@ -304,6 +304,7 @@ class RajSubtitleEngine:
         
         # Generate frames
         frames = []
+        transparent_frames = []
         frame_metadata = {"frames": []}
         
         # Use the final dimensions with padding
@@ -423,8 +424,67 @@ class RajSubtitleEngine:
                 torch.from_numpy(frame.astype(np.float32) / 255.0) 
                 for frame in standardized_frames
             ])
+            
+            # Generate transparent frames directly with RGBA - following chroma key approach
+            logger.info("Generating transparent subtitle frames directly with RGBA format (no post-processing)...")
+            
+            # Create settings with transparent background
+            transparent_settings = self._create_transparent_settings(base_settings)
+            
+            # Generate frames directly with transparent background - NO STANDARDIZATION
+            transparent_frames_list = []
+            
+            for frame_num in range(total_frames):
+                current_time = frame_num / video_fps
+                active_groups = timing_windows.get(frame_num, [])
+                
+                if active_groups:
+                    # Generate frame directly with transparent background
+                    if use_area_based_grouping:
+                        frame = self._generate_transparent_frame_with_area_groups(
+                            active_groups, current_time, transparent_settings, 
+                            highlight_settings, output_width, output_height,
+                            total_padding_left, total_padding_right, total_padding_top, total_padding_bottom, line_gaps
+                        )
+                    elif use_line_groups:
+                        frame = self._generate_transparent_frame_with_line_groups(
+                            active_groups, current_time, transparent_settings, 
+                            highlight_settings, output_width, output_height,
+                            total_padding_left, total_padding_right, total_padding_top, total_padding_bottom, line_gaps
+                        )
+                    else:
+                        frame = self._generate_transparent_frame_with_groups(
+                            active_groups, current_time, transparent_settings, 
+                            highlight_settings, output_width, output_height,
+                            total_padding_left, total_padding_right, total_padding_top, total_padding_bottom, line_gaps
+                        )
+                else:
+                    # Empty transparent frame
+                    frame = self._generate_transparent_empty_frame(output_width, output_height, transparent_settings)
+                
+                # All transparent frame functions ensure RGBA format
+                print(f"Transparent frame {frame_num}: {frame.shape}")
+                print(frame[0,0,3]) # print the alpha channel of the first pixel
+                print(frame[0,0,2]) # print the alpha channel of the first pixel
+                print(frame[0,0,1]) # print the alpha channel of the first pixel
+                print(frame[0,0,0]) # print the alpha channel of the first pixel
+                # Verify frame has expected RGBA format 
+                if len(frame.shape) != 3 or frame.shape[2] != 4:
+                    logger.error(f"Transparent frame {frame_num}: Expected RGBA [H,W,4], got {frame.shape}")
+                    raise ValueError(f"Transparent frame generation failed - expected RGBA format, got {frame.shape}")
+                
+                transparent_frames_list.append(frame)
+            
+            # Stack all RGBA frames as tensors - consistent 4-channel format like chroma key
+            transparent_tensor = torch.stack([
+                torch.from_numpy(frame.astype(np.float32) / 255.0) 
+                for frame in transparent_frames_list
+            ])
         else:
             logger.error("No frames generated")
+            # Create empty tensors for both outputs
+            frames_tensor = torch.zeros((0, output_height, output_width, 3), dtype=torch.float32)
+            transparent_tensor = torch.zeros((0, output_height, output_width, 4), dtype=torch.float32)
             raise ValueError("No frames were generated")
         
         # Create timing info summary
@@ -469,9 +529,15 @@ class RajSubtitleEngine:
         
         frame_metadata.update(metadata)
         
-        logger.info(f"Successfully generated subtitle images: {total_frames} frames, {total_duration:.2f}s")
+        # Convert to ComfyUI format - same approach as chroma key
+        frames_comfy = tensor_to_video_frames(frames_tensor)
+        transparent_comfy = tensor_to_video_frames(transparent_tensor)
         
-        return (frames_tensor, total_frames, timing_info, frame_metadata, bg_hexcode)
+        logger.info(f"Successfully generated subtitle images: {total_frames} frames, {total_duration:.2f}s")
+        logger.info(f"   Regular frames shape: {frames_comfy.shape}")
+        logger.info(f"   Transparent frames shape: {transparent_comfy.shape}")
+        
+        return (frames_comfy, transparent_comfy, total_frames, timing_info, frame_metadata, bg_hexcode)
     
     def generate_subtitle_keyframes(self,
                                   word_timings: List[Dict],
@@ -1032,6 +1098,25 @@ class RajSubtitleEngine:
         
         return frame.astype(np.uint8)
     
+    def _create_transparent_settings(self, base_settings: Dict) -> Dict:
+        """
+        Create a copy of base settings with transparent background
+        """
+        transparent_settings = {}
+        for key, value in base_settings.items():
+            if isinstance(value, dict):
+                transparent_settings[key] = value.copy()
+            else:
+                transparent_settings[key] = value
+        
+        # Ensure output_config exists and set transparent background
+        if 'output_config' not in transparent_settings:
+            transparent_settings['output_config'] = {}
+        
+        transparent_settings['output_config']['background_color'] = 'transparent'
+        
+        return transparent_settings
+    
     def _render_text_with_settings(self, text: str, settings: Dict, output_width: int = None, output_height: int = None, frame_padding_left: int = 20, frame_padding_right: int = 20, frame_padding_top: int = 20, frame_padding_bottom: int = 20, line_gaps: float = 1.2) -> np.ndarray:
         """Render text using the text generator with given settings."""
         try:
@@ -1094,8 +1179,29 @@ class RajSubtitleEngine:
             image_tensor = result[0]  # First return value is the image
             image_array = (image_tensor[0].cpu().numpy() * 255).astype(np.uint8)
             
-            # Standardize to RGB format and validate dimensions
-            image_array = self._standardize_frame_format(image_array, final_width, final_height)
+            # Debug: Log the shape we got from text generator
+            bg_color = output_config.get('background_color', '#000000')
+            logger.info(f"Text generator returned shape: {image_array.shape} for background='{bg_color}'")
+            
+            # Check if this is a transparent background frame (RGBA with alpha channel)
+            is_transparent = output_config.get('background_color', '').lower() == 'transparent'
+            
+            if is_transparent:
+                # Don't standardize transparent frames - preserve RGBA format
+                # Just validate dimensions without converting channels
+                current_height, current_width = image_array.shape[:2]
+                if current_height != final_height or current_width != final_width:
+                    from PIL import Image
+                    # Explicitly specify RGBA mode to preserve alpha channel
+                    if len(image_array.shape) == 3 and image_array.shape[2] == 4:
+                        img_pil = Image.fromarray(image_array, mode='RGBA')
+                    else:
+                        img_pil = Image.fromarray(image_array)
+                    img_pil = img_pil.resize((final_width, final_height), Image.LANCZOS)
+                    image_array = np.array(img_pil)
+            else:
+                # Standardize to RGB format and validate dimensions for non-transparent
+                image_array = self._standardize_frame_format(image_array, final_width, final_height)
             
             return image_array
             
@@ -1135,7 +1241,7 @@ class RajSubtitleEngine:
             
             # Current timestamp is now passed as a parameter
             
-            return self._render_text_with_dynamic_highlighting(
+            result = self._render_text_with_dynamic_highlighting(
                 full_text=full_text,
                 all_words=all_words,
                 highlighted_word=highlighted_word,
@@ -1150,6 +1256,9 @@ class RajSubtitleEngine:
                 frame_padding_bottom=frame_padding_bottom,
                 line_gaps=line_gaps
             )
+            
+            # Dynamic highlighting now always returns a single array
+            return result
             
         except Exception as e:
             logger.warning(f"Error in mixed text highlighting: {e}")
@@ -1204,23 +1313,30 @@ class RajSubtitleEngine:
             output_config = base_settings.get('output_config', {})
             
             # Get colors (standardized to use 'background_color')
-            base_color = font_config.get('color', '#000000')
+            base_color = font_config.get('font_color', '#000000')
             bg_color = output_config.get('background_color', output_config.get('bg_color', '#000000'))
             highlight_font_config = highlight_settings.get('font_config', {})
             highlight_color = highlight_font_config.get('color', '#0000FF')
             
-            # Parse background color
-            if bg_color.startswith('#'):
+            # Parse background color and create single image with appropriate format
+            is_transparent = bg_color.lower() == 'transparent'
+            
+            if is_transparent:
+                # Create RGBA image with transparent background
+                bg_rgba = (0, 0, 0, 0)  # Fully transparent
+                image = Image.new('RGBA', (output_width, output_height), bg_rgba)
+            elif bg_color.startswith('#'):
                 bg_hex = bg_color[1:]
                 bg_r = int(bg_hex[0:2], 16)
                 bg_g = int(bg_hex[2:4], 16) 
                 bg_b = int(bg_hex[4:6], 16)
                 bg_rgb = (bg_r, bg_g, bg_b)
+                # Create RGB image
+                image = Image.new('RGB', (output_width, output_height), bg_rgb)
             else:
                 bg_rgb = (255, 255, 255)  # Default white
+                image = Image.new('RGB', (output_width, output_height), bg_rgb)
             
-            # Create image
-            image = Image.new('RGB', (output_width, output_height), bg_rgb)
             draw = ImageDraw.Draw(image)
             
             # Load fonts with proper weight support
@@ -1240,7 +1356,6 @@ class RajSubtitleEngine:
             # Parse colors
             base_rgb = self._parse_color(base_color)
             highlight_rgb = self._parse_color(highlight_color)
-            
             # Split text into lines and words
             lines = full_text.split('\n')
             
@@ -1330,7 +1445,7 @@ class RajSubtitleEngine:
                         word_x = current_x
                         word_y = y_pos
                     
-                    # Draw the word
+                    # Draw the word on the single image
                     draw.text((word_x, word_y), word, font=word_font, fill=word_color)
                     
                     # Move to next word position
@@ -1339,7 +1454,53 @@ class RajSubtitleEngine:
             
             # Convert to numpy array
             result_array = np.array(image)
-            return self._standardize_frame_format(result_array, output_width, output_height)
+            
+            # Save debug images for testing/validation
+            try:
+                # Save the original PIL image directly
+                debug_filename = f"temp/debug_pil_frame_{current_time:.2f}s.png"
+                image.save(debug_filename)
+                logger.info(f"Saved PIL debug image: {debug_filename}")
+                
+                # For transparent backgrounds, keep RGBA format; for others, standardize to RGB
+                if is_transparent:
+                    # Ensure RGBA format is preserved for transparent backgrounds
+                    if len(result_array.shape) != 3 or result_array.shape[2] != 4:
+                        logger.error(f"Expected RGBA format for transparent background, got: {result_array.shape}")
+                        # Create fallback transparent RGBA frame
+                        result_array = np.zeros((output_height, output_width, 4), dtype=np.uint8)
+                    
+                    # Save numpy array as RGBA image for debugging
+                    from PIL import Image as PILImage
+                    array_image = PILImage.fromarray(result_array, mode='RGBA')
+                    array_debug_filename = f"temp/np_debug_numpy_rgba_{current_time:.2f}s.png"
+                    array_image.save(array_debug_filename)
+                    logger.info(f"Saved numpy RGBA debug image: {array_debug_filename}")
+                    
+                    return result_array
+                else:
+                    # Standardize to RGB format for non-transparent backgrounds
+                    standardized = self._standardize_frame_format(result_array, output_width, output_height)
+                    
+                    # Save numpy array as RGB image for debugging
+                    from PIL import Image as PILImage
+                    array_image = PILImage.fromarray(standardized, mode='RGB')
+                    array_debug_filename = f"debug_numpy_rgb_{current_time:.2f}s.png"
+                    array_image.save(array_debug_filename)
+                    logger.info(f"Saved numpy RGB debug image: {array_debug_filename}")
+                    
+                    return standardized
+                    
+            except Exception as e:
+                logger.error(f"Error saving debug images: {e}")
+                # Continue with normal processing even if debug saving fails
+                if is_transparent:
+                    if len(result_array.shape) != 3 or result_array.shape[2] != 4:
+                        logger.error(f"Expected RGBA format for transparent background, got: {result_array.shape}")
+                        result_array = np.zeros((output_height, output_width, 4), dtype=np.uint8)
+                    return result_array
+                else:
+                    return self._standardize_frame_format(result_array, output_width, output_height)
             
         except Exception as e:
             logger.error(f"Error in dynamic highlighting: {e}")
@@ -1365,6 +1526,7 @@ class RajSubtitleEngine:
     
     def _parse_color(self, color_str: str) -> Tuple[int, int, int]:
         """Parse color string to RGB tuple."""
+        print(color_str,"2============")
         if color_str.startswith('#'):
             color_hex = color_str[1:]
             try:
@@ -1430,7 +1592,14 @@ class RajSubtitleEngine:
         """Generate an empty frame with background."""
         bg_color = settings.get('output_config', {}).get('background_color', '#000000')
         
-        # Parse color
+        # Check if transparent background
+        if bg_color.lower() == 'transparent':
+            # Create RGBA frame with fully transparent background
+            frame = np.zeros((height, width, 4), dtype=np.uint8)
+            # Alpha channel is already 0 (transparent)
+            return frame
+        
+        # Parse color for non-transparent backgrounds
         if bg_color.startswith('#'):
             bg_color = bg_color[1:]
         
@@ -1441,7 +1610,7 @@ class RajSubtitleEngine:
         except (ValueError, IndexError):
             r, g, b = 0, 0, 0  # Default to black
         
-        # Create empty frame
+        # Create empty RGB frame
         frame = np.full((height, width, 3), [r, g, b], dtype=np.uint8)
         return frame
     
@@ -1475,3 +1644,363 @@ class RajSubtitleEngine:
             info.append(f"  ... and {len(sentences) - 5} more sentences")
         
         return "\\n".join(info)
+    
+    def _render_transparent_mixed_text_with_highlighting(self,
+                                                       full_text: str,
+                                                       all_words: List[Dict],
+                                                       highlighted_word: Optional[Dict],
+                                                       current_time: float,
+                                                       base_settings: Dict,
+                                                       highlight_settings: Dict,
+                                                       output_width: int,
+                                                       output_height: int,
+                                                       frame_padding_left: int = 20,
+                                                       frame_padding_right: int = 20,
+                                                       frame_padding_top: int = 20,
+                                                       frame_padding_bottom: int = 20,
+                                                       line_gaps: float = 1.2) -> np.ndarray:
+        """Render text with highlighting on transparent background, ensuring RGBA format."""
+        
+        if not highlighted_word:
+            # No highlighting needed, use transparent text settings
+            transparent_settings = self._create_transparent_settings(base_settings)
+            return self._render_text_with_settings(full_text, transparent_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
+        
+        try:
+            # Create transparent settings
+            transparent_base_settings = self._create_transparent_settings(base_settings)
+            transparent_highlight_settings = self._create_transparent_settings(highlight_settings)
+            
+            # Use dynamic rendering with transparent background
+            result = self._render_text_with_dynamic_highlighting(
+                full_text=full_text,
+                all_words=all_words,
+                highlighted_word=highlighted_word,
+                current_time=current_time,
+                base_settings=transparent_base_settings,
+                highlight_settings=transparent_highlight_settings,
+                output_width=output_width,
+                output_height=output_height,
+                frame_padding_left=frame_padding_left,
+                frame_padding_right=frame_padding_right,
+                frame_padding_top=frame_padding_top,
+                frame_padding_bottom=frame_padding_bottom,
+                line_gaps=line_gaps
+            )
+            
+            # Dynamic highlighting now always returns a single array (RGBA for transparent)
+            return result
+                
+        except Exception as e:
+            logger.error(f"Error rendering transparent mixed text: {e}")
+            # Fallback to simple transparent rendering
+            transparent_settings = self._create_transparent_settings(base_settings)
+            return self._render_text_with_settings(full_text, transparent_settings, output_width, output_height, frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps)
+    
+    def _ensure_rgba_format(self, frame: np.ndarray, frame_info: str = "") -> np.ndarray:
+        """
+        Ensure frame is in RGBA format (4 channels).
+        Converts RGB to RGBA by adding full alpha channel if necessary.
+        """
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            # Convert RGB to RGBA by adding full alpha channel
+            height, width = frame.shape[:2]
+            alpha_channel = np.ones((height, width, 1), dtype=frame.dtype) * 255
+            rgba_frame = np.concatenate([frame, alpha_channel], axis=2)
+            logger.warning(f"Converted {frame_info} from RGB to RGBA - text generator should return RGBA for transparent backgrounds")
+            return rgba_frame
+        elif len(frame.shape) == 3 and frame.shape[2] == 4:
+            # Already RGBA
+            return frame
+        else:
+            raise ValueError(f"Invalid frame format for {frame_info}: {frame.shape}")
+    
+    def _generate_transparent_empty_frame(self, width: int, height: int, settings: Dict) -> np.ndarray:
+        """Generate an empty transparent frame with RGBA format."""
+        # Generate base empty frame
+        frame = self._generate_empty_frame(width, height, settings)
+        # Ensure RGBA format
+        return self._ensure_rgba_format(frame, "empty transparent frame")
+    
+    def _generate_transparent_frame_with_groups(self, 
+                                              active_groups: List[Dict],
+                                              current_time: float,
+                                              base_settings: Dict,
+                                              highlight_settings: Optional[Dict],
+                                              output_width: int,
+                                              output_height: int,
+                                              frame_padding_left: int = 20,
+                                              frame_padding_right: int = 20,
+                                              frame_padding_top: int = 20,
+                                              frame_padding_bottom: int = 20,
+                                              line_gaps: float = 1.2) -> np.ndarray:
+        """Generate transparent frame with word groups - direct RGBA generation with highlighting support."""
+        # Create text lines from active groups
+        text_lines = []
+        all_words = []
+        
+        for group in active_groups:
+            text_lines.append(group['text'])
+            all_words.extend(group['words'])
+        
+        full_text = '\n'.join(text_lines)
+        
+        if not full_text.strip():
+            return self._generate_transparent_empty_frame(output_width, output_height, base_settings)
+        
+        # Add word highlighting if enabled
+        if highlight_settings and all_words:
+            highlighted_word = get_current_highlighted_word(all_words, current_time)
+            if highlighted_word:
+                
+
+                # Use mixed text rendering with highlighting for transparent background
+                return self._render_transparent_mixed_text_with_highlighting(
+                    full_text=full_text,
+                    all_words=all_words,
+                    highlighted_word=highlighted_word,
+                    current_time=current_time,
+                    base_settings=base_settings,
+                    highlight_settings=highlight_settings,
+                    output_width=output_width,
+                    output_height=output_height,
+                    frame_padding_left=frame_padding_left,
+                    frame_padding_right=frame_padding_right,
+                    frame_padding_top=frame_padding_top,
+                    frame_padding_bottom=frame_padding_bottom,
+                    line_gaps=line_gaps
+                )
+        # No highlighting, use transparent text rendering directly
+        return self._render_transparent_text_with_settings(
+            full_text, base_settings, output_width, output_height, 
+            frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps
+        )
+    
+    def _generate_transparent_frame_with_line_groups(self,
+                                                   active_line_groups: List[Dict],
+                                                   current_time: float,
+                                                   base_settings: Dict,
+                                                   highlight_settings: Optional[Dict],
+                                                   output_width: int,
+                                                   output_height: int,
+                                                   frame_padding_left: int = 20,
+                                                   frame_padding_right: int = 20,
+                                                   frame_padding_top: int = 20,
+                                                   frame_padding_bottom: int = 20,
+                                                   line_gaps: float = 1.2) -> np.ndarray:
+        """Generate transparent frame with line groups - direct RGBA generation with highlighting support."""
+        if not active_line_groups:
+            return self._generate_transparent_empty_frame(output_width, output_height, base_settings)
+        
+        # Take the first line group
+        line_group = active_line_groups[0]
+        full_text = line_group.get('combined_text', line_group.get('text', ''))
+        
+        if not full_text.strip():
+            return self._generate_transparent_empty_frame(output_width, output_height, base_settings)
+        
+        # Add word highlighting if enabled
+        if highlight_settings:
+            # Extract all words from all lines in the group
+            all_words = []
+            for line in line_group.get('lines', []):
+                all_words.extend(line.get('words', []))
+            
+            if all_words:
+                highlighted_word = get_current_highlighted_word(all_words, current_time)
+                if highlighted_word:
+                    return self._render_transparent_mixed_text_with_highlighting(
+                        full_text=full_text,
+                        all_words=all_words,
+                        highlighted_word=highlighted_word,
+                        current_time=current_time,
+                        base_settings=base_settings,
+                        highlight_settings=highlight_settings,
+                        output_width=output_width,
+                        output_height=output_height,
+                        frame_padding_left=frame_padding_left,
+                        frame_padding_right=frame_padding_right,
+                        frame_padding_top=frame_padding_top,
+                        frame_padding_bottom=frame_padding_bottom,
+                        line_gaps=line_gaps
+                    )
+        
+        # No highlighting, use transparent text rendering directly
+        return self._render_transparent_text_with_settings(
+            full_text, base_settings, output_width, output_height, 
+            frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps
+        )
+    
+    def _generate_transparent_frame_with_area_groups(self,
+                                                   active_area_groups: List[Dict],
+                                                   current_time: float,
+                                                   base_settings: Dict,
+                                                   highlight_settings: Optional[Dict],
+                                                   output_width: int,
+                                                   output_height: int,
+                                                   frame_padding_left: int = 20,
+                                                   frame_padding_right: int = 20,
+                                                   frame_padding_top: int = 20,
+                                                   frame_padding_bottom: int = 20,
+                                                   line_gaps: float = 1.2) -> np.ndarray:
+        """Generate transparent frame with area groups - direct RGBA generation with highlighting support."""
+        if not active_area_groups:
+            return self._generate_transparent_empty_frame(output_width, output_height, base_settings)
+        
+        # Take the first area group
+        area_group = active_area_groups[0]
+        full_text = area_group.get('text', '')
+        
+        if not full_text.strip():
+            return self._generate_transparent_empty_frame(output_width, output_height, base_settings)
+        
+        # Add word highlighting if enabled
+        if highlight_settings:
+            # Extract all words from the area group
+            all_words = area_group.get('words', [])
+            
+            if all_words:
+                highlighted_word = get_current_highlighted_word(all_words, current_time)
+                if highlighted_word:
+                    return self._render_transparent_mixed_text_with_highlighting(
+                        full_text=full_text,
+                        all_words=all_words,
+                        highlighted_word=highlighted_word,
+                        current_time=current_time,
+                        base_settings=base_settings,
+                        highlight_settings=highlight_settings,
+                        output_width=output_width,
+                        output_height=output_height,
+                        frame_padding_left=frame_padding_left,
+                        frame_padding_right=frame_padding_right,
+                        frame_padding_top=frame_padding_top,
+                        frame_padding_bottom=frame_padding_bottom,
+                        line_gaps=line_gaps
+                    )
+        
+        # No highlighting, use transparent text rendering directly
+        return self._render_transparent_text_with_settings(
+            full_text, base_settings, output_width, output_height, 
+            frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps
+        )
+    def _render_transparent_text_with_settings(self, text: str, settings: Dict, output_width: int = None, output_height: int = None, frame_padding_left: int = 20, frame_padding_right: int = 20, frame_padding_top: int = 20, frame_padding_bottom: int = 20, line_gaps: float = 1.2) -> np.ndarray:
+        """Render text with transparent background, ensuring RGBA format."""
+        try:
+            # Create fully transparent background settings
+            transparent_settings = settings.copy()
+            if "output_config" not in transparent_settings:
+                transparent_settings["output_config"] = {}
+            transparent_settings["output_config"]["background_color"] = "transparent"
+            
+            # Extract all parameters from settings
+            font_config = transparent_settings.get("font_config", {})
+            layout_config = transparent_settings.get("layout_config", {})
+            effects_config = transparent_settings.get("effects_config", {})
+            container_config = transparent_settings.get("container_config", {})
+            output_config = transparent_settings.get("output_config", {})
+            
+            # Use explicit dimensions if provided, otherwise fall back to settings
+            final_width = output_width if output_width is not None else output_config.get("output_width", 512)
+            final_height = output_height if output_height is not None else output_config.get("output_height", 256)
+            
+            # Call text generator with transparent background
+            result = self.text_generator.generate_text(
+                text=text,
+                output_width=final_width,
+                output_height=final_height,
+                font_name=font_config.get("font_name", "Arial"),
+                font_size=font_config.get("font_size", 24),
+                font_color=font_config.get("font_color", "#FFFFFF"),
+                background_color="transparent",  # Force transparent background
+                text_align=layout_config.get("text_align", "center"),
+                vertical_align=layout_config.get("vertical_align", "middle"),
+                words_per_line=layout_config.get("words_per_line", 0),
+                max_lines=layout_config.get("max_lines", 0),
+                line_spacing=line_gaps,
+                letter_spacing=layout_config.get("letter_spacing", 0),
+                margin_x=frame_padding_left,
+                margin_y=frame_padding_top,
+                auto_size=layout_config.get("auto_size", False),
+                base_opacity=output_config.get("base_opacity", 1.0),
+                font_file=font_config.get("font_file", ""),
+                font_weight=font_config.get("font_weight", "normal"),
+                text_border_width=effects_config.get("text_border_width", 0),
+                text_border_color=effects_config.get("text_border_color", "#000000"),
+                shadow_enabled=effects_config.get("shadow_enabled", False),
+                shadow_offset_x=effects_config.get("shadow_offset_x", 2),
+                shadow_offset_y=effects_config.get("shadow_offset_y", 2),
+                shadow_color=effects_config.get("shadow_color", "#000000"),
+                shadow_blur=effects_config.get("shadow_blur", 2),
+                text_bg_enabled=effects_config.get("text_bg_enabled", False),
+                text_bg_color=effects_config.get("text_bg_color", "#FFFF00"),
+                text_bg_padding=effects_config.get("text_bg_padding", 5),
+                gradient_enabled=effects_config.get("gradient_enabled", False),
+                gradient_color2=effects_config.get("gradient_color2", "#FF0000"),
+                gradient_direction=effects_config.get("gradient_direction", "vertical"),
+                container_enabled=container_config.get("container_enabled", False),
+                container_color=container_config.get("container_color", "#333333"),
+                container_width=container_config.get("container_width", 2),
+                container_padding=container_config.get("container_padding", 15),
+                container_border_color=container_config.get("container_border_color", "#FFFFFF"),
+                container_fill=container_config.get("container_fill", True)
+            )
+            
+            # Extract image tensor and convert to numpy array
+            image_tensor = result[0]  # First return value is the image
+            image_array = (image_tensor[0].cpu().numpy() * 255).astype(np.uint8)
+            
+            # Debug: Log what we got
+            logger.info(f"Transparent text generator returned shape: {image_array.shape}")
+            
+            # Verify its RGBA format
+            if len(image_array.shape) != 3 or image_array.shape[2] != 4:
+                logger.error(f"Expected RGBA format from transparent text generator, got: {image_array.shape}")
+                # Create a truly transparent RGBA frame as fallback
+                rgba_array = np.zeros((final_height, final_width, 4), dtype=np.uint8)
+                return rgba_array
+            
+            return image_array
+            
+        except Exception as e:
+            logger.error(f"Error rendering transparent text: {e}")
+            # Return fully transparent RGBA frame as fallback
+            fallback_width = output_width if output_width is not None else settings.get("output_config", {}).get("output_width", 512)
+            fallback_height = output_height if output_height is not None else settings.get("output_config", {}).get("output_height", 256)
+            return np.zeros((fallback_height, fallback_width, 4), dtype=np.uint8)
+
+    def _render_transparent_mixed_text_with_highlighting(self,
+                                                       full_text: str,
+                                                       all_words: List[Dict],
+                                                       highlighted_word: Optional[Dict],
+                                                       current_time: float,
+                                                       base_settings: Dict,
+                                                       highlight_settings: Dict,
+                                                       output_width: int,
+                                                       output_height: int,
+                                                       frame_padding_left: int = 20,
+                                                       frame_padding_right: int = 20,
+                                                       frame_padding_top: int = 20,
+                                                       frame_padding_bottom: int = 20,
+                                                       line_gaps: float = 1.2) -> np.ndarray:
+        """Render text with highlighting on transparent background, ensuring RGBA format."""
+        try:
+            # Create transparent settings for both base and highlight
+            transparent_base_settings = self._create_transparent_settings(base_settings)
+            transparent_highlight_settings = self._create_transparent_settings(highlight_settings)
+            
+            # For now, use simple approach: render base text with transparent background
+            # TODO: Implement proper transparent highlighting in future version
+            logger.info(f"Rendering transparent text with highlighting for word: {highlighted_word.get('word', '')}")
+            
+            return self._render_transparent_text_with_settings(
+                full_text, transparent_base_settings, output_width, output_height,
+                frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps
+            )
+            
+        except Exception as e:
+            logger.error(f"Error rendering transparent mixed text: {e}")
+            # Fallback to simple transparent rendering
+            return self._render_transparent_text_with_settings(
+                full_text, base_settings, output_width, output_height,
+                frame_padding_left, frame_padding_right, frame_padding_top, frame_padding_bottom, line_gaps
+            )

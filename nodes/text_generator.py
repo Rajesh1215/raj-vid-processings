@@ -982,31 +982,51 @@ class RajTextGenerator:
             image = Image.new('RGBA', (output_width, output_height), bg_color)
             image = Image.composite(gradient_img, image, text_mask)
         
+        # Ensure image is RGBA when transparent background is requested
+        if background_color.lower() == 'transparent' and image.mode != 'RGBA':
+            logger.warning(f"Converting image from {image.mode} to RGBA for transparent background")
+            image = image.convert('RGBA')
+        
         # Create alpha mask from the alpha channel
-        alpha_mask = image.split()[3]
+        if len(image.split()) >= 4:
+            alpha_mask = image.split()[3]
+        else:
+            # Create full alpha mask if no alpha channel exists
+            alpha_mask = Image.new('L', image.size, 255)
+            logger.warning(f"No alpha channel found in image mode {image.mode}, creating full alpha mask")
         
         # Convert to tensor format (B, H, W, C)
         image_np = np.array(image).astype(np.float32) / 255.0
         image_tensor = torch.from_numpy(image_np).unsqueeze(0)
         
+        # Debug: Log what we're returning
+        logger.info(f"Text generator creating tensor with shape: {image_np.shape} from PIL mode: {image.mode}")
+        if background_color.lower() == 'transparent' and len(image_np.shape) == 3 and image_np.shape[2] != 4:
+            logger.error(f"TRANSPARENT BACKGROUND ERROR: Expected RGBA, got shape {image_np.shape}")
+        
         # Create transparent text version (no background, only text with alpha)
-        transparent_image = Image.new('RGBA', (output_width, output_height), (0, 0, 0, 0))
-        if hasattr(image, 'split') and len(image.split()) == 4:
-            # Extract RGB channels from original and alpha channel
-            r, g, b, a = image.split()
-            # Combine with fully transparent background
-            transparent_image = Image.merge('RGBA', (r, g, b, a))
-            # Make background pixels fully transparent
-            transparent_data = list(transparent_image.getdata())
-            bg_r, bg_g, bg_b = self.parse_color(background_color)[:3]
-            # Convert background pixels to transparent
-            for i, (r, g, b, a) in enumerate(transparent_data):
-                # If pixel is close to background color, make it transparent
-                if abs(r - bg_r) < 10 and abs(g - bg_g) < 10 and abs(b - bg_b) < 10:
-                    transparent_data[i] = (r, g, b, 0)
-            transparent_image.putdata(transparent_data)
-        else:
+        if background_color.lower() == 'transparent':
+            # If background is already transparent, use the image as-is for transparent output
             transparent_image = image.copy()
+        else:
+            # Only do background detection for non-transparent backgrounds
+            transparent_image = Image.new('RGBA', (output_width, output_height), (0, 0, 0, 0))
+            if hasattr(image, 'split') and len(image.split()) == 4:
+                # Extract RGB channels from original and alpha channel
+                r, g, b, a = image.split()
+                # Combine with fully transparent background
+                transparent_image = Image.merge('RGBA', (r, g, b, a))
+                # Make background pixels fully transparent
+                transparent_data = list(transparent_image.getdata())
+                bg_r, bg_g, bg_b = self.parse_color(background_color)[:3]
+                # Convert background pixels to transparent
+                for i, (r, g, b, a) in enumerate(transparent_data):
+                    # If pixel is close to background color, make it transparent
+                    if abs(r - bg_r) < 10 and abs(g - bg_g) < 10 and abs(b - bg_b) < 10:
+                        transparent_data[i] = (r, g, b, 0)
+                transparent_image.putdata(transparent_data)
+            else:
+                transparent_image = image.copy()
         
         transparent_np = np.array(transparent_image).astype(np.float32) / 255.0
         transparent_tensor = torch.from_numpy(transparent_np).unsqueeze(0)
