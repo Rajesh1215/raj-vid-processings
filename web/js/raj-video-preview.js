@@ -165,7 +165,7 @@ class RajVideoPreviewWidget {
         
         if (typeof previewData === 'string') {
             // Simple file path
-            videoUrl = `/view?filename=${encodeURIComponent(previewData)}&type=output`;
+            videoUrl = `/raj-vid/preview?path=${encodeURIComponent(previewData)}&format=mp4`;
             filename = previewData;
             format = previewData.split('.').pop() || 'mp4';
         } else if (previewData.filename) {
@@ -173,12 +173,12 @@ class RajVideoPreviewWidget {
             const type = previewData.type || 'output';
             const subfolder = previewData.subfolder || '';
             filename = previewData.filename;
-            format = previewData.format || 'video/mp4';
+            format = filename.split('.').pop() || 'mp4';
             
             if (subfolder) {
-                videoUrl = `/view?filename=${encodeURIComponent(filename)}&type=${type}&subfolder=${encodeURIComponent(subfolder)}`;
+                videoUrl = `/raj-vid/preview?path=${encodeURIComponent(subfolder ? subfolder + '/' + filename : filename)}&format=${format}`;
             } else {
-                videoUrl = `/view?filename=${encodeURIComponent(filename)}&type=${type}`;
+                videoUrl = `/raj-vid/preview?path=${encodeURIComponent(filename)}&format=${format}`;
             }
         } else {
             console.warn('Unknown preview data format:', previewData);
