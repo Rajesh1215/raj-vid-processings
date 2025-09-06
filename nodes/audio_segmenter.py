@@ -70,9 +70,9 @@ class RajAudioSegmenter:
     FUNCTION = "segment_audio"
     CATEGORY = "Raj Video Processing 🎬/Audio"
     
-    def segment_audio(self, audio: torch.Tensor, start_time: float, end_time: float,
+    def segment_audio(self, audio, start_time: float, end_time: float,
                      current_sample_rate: int, fade_edges: bool, fade_duration: float,
-                     crossfade_junction: bool = False, junction_fade_duration: float = 0.05) -> Tuple[torch.Tensor, torch.Tensor, str]:
+                     crossfade_junction: bool = False, junction_fade_duration: float = 0.05):
         """
         Segment audio into extracted portion and remaining portion.
         
@@ -82,22 +82,32 @@ class RajAudioSegmenter:
             segment_info: Information about the segmentation
         """
         
-        if audio.numel() == 0:
+        # Extract tensor from ComfyUI AUDIO format (dict with waveform and sample_rate)
+        if isinstance(audio, dict):
+            audio_tensor = audio["waveform"].squeeze(0).transpose(0, 1)  # [batch, channels, samples] -> [samples, channels]
+            audio_sr = audio["sample_rate"]
+        else:
+            audio_tensor = audio
+            audio_sr = current_sample_rate
+        
+        if audio_tensor.numel() == 0:
             logger.warning("Input audio is empty")
-            empty = torch.zeros((1, 1))
-            return (empty, empty, "Input audio was empty")
+            empty_audio = {"waveform": torch.zeros(1, 1, 1), "sample_rate": audio_sr}
+            return (empty_audio, empty_audio, "Input audio was empty")
         
         # Validate times
         if end_time <= start_time:
             logger.error(f"Invalid segment: end_time ({end_time}) must be greater than start_time ({start_time})")
-            return (audio, torch.zeros((1, audio.shape[1])), "Invalid time range")
+            error_audio = {"waveform": audio_tensor.transpose(0, 1).unsqueeze(0), "sample_rate": audio_sr}
+            empty_audio = {"waveform": torch.zeros(1, audio_tensor.shape[1], 1), "sample_rate": audio_sr}
+            return (error_audio, empty_audio, "Invalid time range")
         
         # Calculate sample positions
-        total_samples = audio.shape[0]
-        total_duration = total_samples / current_sample_rate
+        total_samples = audio_tensor.shape[0]
+        total_duration = total_samples / audio_sr
         
-        start_sample = int(start_time * current_sample_rate)
-        end_sample = int(end_time * current_sample_rate)
+        start_sample = int(start_time * audio_sr)
+        end_sample = int(end_time * audio_sr)
         
         # Clamp to valid range
         start_sample = max(0, min(start_sample, total_samples))
@@ -105,52 +115,54 @@ class RajAudioSegmenter:
         
         if start_sample >= total_samples:
             logger.warning(f"Start time {start_time}s exceeds audio duration {total_duration:.2f}s")
-            return (torch.zeros((1, audio.shape[1])), audio, f"Start time exceeds duration")
+            empty_segment = {"waveform": torch.zeros(1, audio_tensor.shape[1], 1), "sample_rate": audio_sr}
+            full_audio = {"waveform": audio_tensor.transpose(0, 1).unsqueeze(0), "sample_rate": audio_sr}
+            return (empty_segment, full_audio, f"Start time exceeds duration")
         
         logger.info(f"✂️ Segmenting audio: {start_time:.2f}s - {end_time:.2f}s (samples {start_sample:,} - {end_sample:,})")
         
         try:
             # Extract the segment
-            segmented_audio = audio[start_sample:end_sample].clone()
+            segmented_audio = audio_tensor[start_sample:end_sample].clone()
             
             # Create remaining audio (before + after segment)
             if start_sample > 0 and end_sample < total_samples:
                 # There's audio before and after
-                before_segment = audio[:start_sample]
-                after_segment = audio[end_sample:]
+                before_segment = audio_tensor[:start_sample]
+                after_segment = audio_tensor[end_sample:]
                 
                 if crossfade_junction:
                     # Apply crossfade at junction point
                     remaining_audio = self._crossfade_junction(
                         before_segment, after_segment, 
-                        junction_fade_duration, current_sample_rate
+                        junction_fade_duration, audio_sr
                     )
                 else:
                     # Simple concatenation
                     remaining_audio = torch.cat([before_segment, after_segment], dim=0)
             elif start_sample == 0:
                 # Segment is at the beginning
-                remaining_audio = audio[end_sample:]
+                remaining_audio = audio_tensor[end_sample:]
             else:
                 # Segment is at the end
-                remaining_audio = audio[:start_sample]
+                remaining_audio = audio_tensor[:start_sample]
             
             # Apply fade edges if requested
             if fade_edges and segmented_audio.shape[0] > 1:
                 segmented_audio = self._apply_fade_edges(
-                    segmented_audio, fade_duration, current_sample_rate
+                    segmented_audio, fade_duration, audio_sr
                 )
                 logger.info(f"🔊 Applied fade in/out of {fade_duration:.2f}s to segment edges")
             
             # Ensure we have valid audio tensors
             if segmented_audio.shape[0] == 0:
-                segmented_audio = torch.zeros((1, audio.shape[1]))
+                segmented_audio = torch.zeros((1, audio_tensor.shape[1]))
             if remaining_audio.shape[0] == 0:
-                remaining_audio = torch.zeros((1, audio.shape[1]))
+                remaining_audio = torch.zeros((1, audio_tensor.shape[1]))
             
             # Calculate segment info
-            segment_duration = segmented_audio.shape[0] / current_sample_rate
-            remaining_duration = remaining_audio.shape[0] / current_sample_rate
+            segment_duration = segmented_audio.shape[0] / audio_sr
+            remaining_duration = remaining_audio.shape[0] / audio_sr
             
             segment_info = (
                 f"Audio Segmentation Complete\n"
@@ -158,8 +170,8 @@ class RajAudioSegmenter:
                 f"Segment Range: {start_time:.2f}s - {end_time:.2f}s\n"
                 f"Segment Duration: {segment_duration:.2f}s ({segmented_audio.shape[0]:,} samples)\n"
                 f"Remaining Duration: {remaining_duration:.2f}s ({remaining_audio.shape[0]:,} samples)\n"
-                f"Sample Rate: {current_sample_rate} Hz\n"
-                f"Channels: {audio.shape[1]}\n"
+                f"Sample Rate: {audio_sr} Hz\n"
+                f"Channels: {audio_tensor.shape[1]}\n"
                 f"Fade Edges: {'Yes' if fade_edges else 'No'}"
                 + (f" ({fade_duration:.2f}s)" if fade_edges else "") + "\n"
                 f"Crossfade Junction: {'Yes' if crossfade_junction else 'No'}"
@@ -168,11 +180,23 @@ class RajAudioSegmenter:
             
             logger.info(f"✅ Segmentation complete: {segment_duration:.2f}s extracted, {remaining_duration:.2f}s remaining")
             
-            return (segmented_audio, remaining_audio, segment_info)
+            # Return in ComfyUI AUDIO format
+            segment_result = {
+                "waveform": segmented_audio.transpose(0, 1).unsqueeze(0),  # [samples, channels] -> [batch, channels, samples]
+                "sample_rate": audio_sr
+            }
+            remaining_result = {
+                "waveform": remaining_audio.transpose(0, 1).unsqueeze(0),  # [samples, channels] -> [batch, channels, samples]  
+                "sample_rate": audio_sr
+            }
+            
+            return (segment_result, remaining_result, segment_info)
             
         except Exception as e:
             logger.error(f"Error during audio segmentation: {e}")
-            return (audio, torch.zeros((1, audio.shape[1])), f"Segmentation failed: {str(e)}")
+            error_audio = {"waveform": audio_tensor.transpose(0, 1).unsqueeze(0), "sample_rate": audio_sr}
+            empty_audio = {"waveform": torch.zeros(1, audio_tensor.shape[1], 1), "sample_rate": audio_sr}
+            return (error_audio, empty_audio, f"Segmentation failed: {str(e)}")
     
     def _apply_fade_edges(self, audio: torch.Tensor, fade_duration: float, sample_rate: int) -> torch.Tensor:
         """Apply fade in and fade out to audio segment."""

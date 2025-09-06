@@ -173,7 +173,9 @@ class RajAudioLoader:
             
             logger.info(f"✅ Audio loaded successfully: {final_duration:.2f}s")
             
-            return (audio_tensor, audio_info, file_info)
+            # Return in ComfyUI AUDIO format
+            audio_output = {"waveform": audio_tensor.transpose(0, 1).unsqueeze(0), "sample_rate": metadata['sample_rate']}
+            return (audio_output, audio_info, file_info)
             
         except Exception as e:
             logger.error(f"Error loading audio file: {e}")
@@ -291,11 +293,19 @@ class RajAudioProcessor:
                      trim_start=0.0, trim_end=0.0, fade_in=0.1, fade_out=0.1,
                      amplify_db=0.0):
         
-        if audio.numel() == 0:
+        # Extract tensor from ComfyUI AUDIO format (dict with waveform and sample_rate)
+        if isinstance(audio, dict):
+            audio_tensor = audio["waveform"].squeeze(0).transpose(0, 1)  # [batch, channels, samples] -> [samples, channels]
+            audio_sr = audio["sample_rate"]
+        else:
+            audio_tensor = audio
+            audio_sr = current_sample_rate
+        
+        if audio_tensor.numel() == 0:
             logger.warning("Input audio is empty")
             return (audio, "Input audio was empty")
         
-        processed_audio = audio.clone()
+        processed_audio = audio_tensor.clone()
         operations_applied = []
         
         try:
@@ -311,18 +321,18 @@ class RajAudioProcessor:
             
             elif operation == "resample":
                 processed_audio = AudioProcessor.resample_audio(
-                    processed_audio, current_sample_rate, target_sample_rate
+                    processed_audio, audio_sr, target_sample_rate
                 )
-                operations_applied.append(f"resample ({current_sample_rate}Hz → {target_sample_rate}Hz)")
-                logger.info(f"🔊 Resampled audio: {current_sample_rate}Hz → {target_sample_rate}Hz")
+                operations_applied.append(f"resample ({audio_sr}Hz → {target_sample_rate}Hz)")
+                logger.info(f"🔊 Resampled audio: {audio_sr}Hz → {target_sample_rate}Hz")
+                audio_sr = target_sample_rate  # Update sample rate for output
             
             elif operation == "trim":
-                sample_rate = current_sample_rate
                 total_samples = processed_audio.shape[0]
-                total_duration = total_samples / sample_rate
+                total_duration = total_samples / audio_sr
                 
-                start_sample = int(trim_start * sample_rate) if trim_start > 0 else 0
-                end_sample = int(trim_end * sample_rate) if trim_end > 0 else total_samples
+                start_sample = int(trim_start * audio_sr) if trim_start > 0 else 0
+                end_sample = int(trim_end * audio_sr) if trim_end > 0 else total_samples
                 
                 start_sample = max(0, min(start_sample, total_samples))
                 end_sample = max(start_sample, min(end_sample, total_samples))
@@ -332,12 +342,11 @@ class RajAudioProcessor:
                 logger.info(f"✂️ Trimmed audio: {start_sample} - {end_sample} samples")
             
             elif operation == "fade":
-                sample_rate = current_sample_rate
                 total_samples = processed_audio.shape[0]
                 
                 # Apply fade in
                 if fade_in > 0:
-                    fade_in_samples = int(fade_in * sample_rate)
+                    fade_in_samples = int(fade_in * audio_sr)
                     fade_in_samples = min(fade_in_samples, total_samples)
                     
                     fade_curve = torch.linspace(0, 1, fade_in_samples).unsqueeze(1)
@@ -345,7 +354,7 @@ class RajAudioProcessor:
                 
                 # Apply fade out
                 if fade_out > 0:
-                    fade_out_samples = int(fade_out * sample_rate)
+                    fade_out_samples = int(fade_out * audio_sr)
                     fade_out_samples = min(fade_out_samples, total_samples)
                     
                     fade_curve = torch.linspace(1, 0, fade_out_samples).unsqueeze(1)
@@ -369,14 +378,16 @@ class RajAudioProcessor:
             processing_info = (
                 f"Audio Processing Complete\n"
                 f"Operations: {', '.join(operations_applied)}\n"
-                f"Input: {audio.shape[0]:,} samples, {audio.shape[1]} channels\n"
+                f"Input: {audio_tensor.shape[0]:,} samples, {audio_tensor.shape[1]} channels\n"
                 f"Output: {processed_audio.shape[0]:,} samples, {processed_audio.shape[1]} channels\n"
-                f"Duration change: {audio.shape[0]/current_sample_rate:.2f}s → {processed_audio.shape[0]/current_sample_rate:.2f}s"
+                f"Duration change: {audio_tensor.shape[0]/audio_sr:.2f}s → {processed_audio.shape[0]/audio_sr:.2f}s"
             )
             
             logger.info(f"✅ Audio processing completed")
             
-            return (processed_audio, processing_info)
+            # Return in ComfyUI AUDIO format
+            audio_output = {"waveform": processed_audio.transpose(0, 1).unsqueeze(0), "sample_rate": audio_sr}
+            return (audio_output, processing_info)
             
         except Exception as e:
             logger.error(f"Error processing audio: {e}")

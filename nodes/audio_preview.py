@@ -89,7 +89,15 @@ class RajAudioPreview:
                       output_format="wav", filename_prefix="audio_preview",
                       normalize_preview=True):
         
-        if audio.numel() == 0:
+        # Extract tensor from ComfyUI AUDIO format (dict with waveform and sample_rate)
+        if isinstance(audio, dict):
+            audio_tensor = audio["waveform"].squeeze(0).transpose(0, 1)  # [batch, channels, samples] -> [samples, channels]
+            audio_sr = audio["sample_rate"]
+        else:
+            audio_tensor = audio
+            audio_sr = sample_rate
+        
+        if audio_tensor.numel() == 0:
             logger.warning("Input audio is empty")
             return ("Empty audio", "", "", "Error: Empty audio input")
         
@@ -97,14 +105,14 @@ class RajAudioPreview:
             logger.info(f"🎵 Creating audio preview: {preview_mode} mode")
             
             # Clone audio to avoid modifying original
-            preview_audio = audio.clone()
+            preview_audio = audio_tensor.clone()
             original_shape = preview_audio.shape
             total_samples = preview_audio.shape[0]
-            total_duration = total_samples / sample_rate
+            total_duration = total_samples / audio_sr
             
             # Apply start offset
             if start_offset > 0:
-                offset_samples = int(start_offset * sample_rate)
+                offset_samples = int(start_offset * audio_sr)
                 if offset_samples < total_samples:
                     preview_audio = preview_audio[offset_samples:]
                     logger.info(f"⏭️ Applied start offset: {start_offset:.1f}s")
@@ -114,7 +122,7 @@ class RajAudioPreview:
             
             # Apply preview duration limit
             if preview_duration > 0:
-                duration_samples = int(preview_duration * sample_rate)
+                duration_samples = int(preview_duration * audio_sr)
                 if duration_samples < preview_audio.shape[0]:
                     preview_audio = preview_audio[:duration_samples]
                     logger.info(f"✂️ Limited to {preview_duration:.1f}s")
@@ -134,8 +142,8 @@ class RajAudioPreview:
                 logger.info(f"📈 Normalized preview audio")
             
             # Apply fade edges
-            if fade_edges and preview_audio.shape[0] > sample_rate * 0.1:  # Only if longer than 0.1s
-                fade_samples = min(int(0.05 * sample_rate), preview_audio.shape[0] // 20)  # 50ms or 5% max
+            if fade_edges and preview_audio.shape[0] > audio_sr * 0.1:  # Only if longer than 0.1s
+                fade_samples = min(int(0.05 * audio_sr), preview_audio.shape[0] // 20)  # 50ms or 5% max
                 
                 # Fade in
                 fade_in_curve = torch.linspace(0, 1, fade_samples).unsqueeze(1)
@@ -153,15 +161,15 @@ class RajAudioPreview:
             
             # Create output file
             file_path = self._save_preview_audio(
-                preview_audio, sample_rate, preview_mode, 
+                preview_audio, audio_sr, preview_mode, 
                 output_format, filename_prefix
             )
             
             # Generate audio info
-            preview_duration_actual = preview_audio.shape[0] / sample_rate
+            preview_duration_actual = preview_audio.shape[0] / audio_sr
             audio_info = (
                 f"Audio Preview Generated\\n"
-                f"Original: {total_duration:.2f}s @ {sample_rate}Hz\\n"
+                f"Original: {total_duration:.2f}s @ {audio_sr}Hz\\n"
                 f"Preview: {preview_duration_actual:.2f}s\\n"
                 f"Samples: {original_shape[0]:,} → {preview_audio.shape[0]:,}\\n"
                 f"Channels: {preview_audio.shape[1] if preview_audio.dim() > 1 else 1}\\n"
@@ -173,7 +181,7 @@ class RajAudioPreview:
             )
             
             # Generate waveform data for visualization
-            waveform_data = self._generate_waveform_data(preview_audio, sample_rate)
+            waveform_data = self._generate_waveform_data(preview_audio, audio_sr)
             
             # Status message
             status = f"✅ Preview created: {os.path.basename(file_path)} ({preview_duration_actual:.1f}s)"
@@ -324,22 +332,30 @@ class RajAudioAnalyzer:
     
     def analyze_audio(self, audio, sample_rate, analysis_type, window_size=1.0, overlap=0.5):
         
-        if audio.numel() == 0:
+        # Extract tensor from ComfyUI AUDIO format (dict with waveform and sample_rate)
+        if isinstance(audio, dict):
+            audio_tensor = audio["waveform"].squeeze(0).transpose(0, 1)  # [batch, channels, samples] -> [samples, channels]
+            audio_sr = audio["sample_rate"]
+        else:
+            audio_tensor = audio
+            audio_sr = sample_rate
+        
+        if audio_tensor.numel() == 0:
             return ("Empty audio input", "No statistics available", "No recommendations")
         
         try:
             logger.info(f"🔍 Analyzing audio: {analysis_type} analysis")
             
             # Basic audio properties
-            total_samples = audio.shape[0]
-            duration = total_samples / sample_rate
-            channels = audio.shape[1] if audio.dim() > 1 else 1
+            total_samples = audio_tensor.shape[0]
+            duration = total_samples / audio_sr
+            channels = audio_tensor.shape[1] if audio_tensor.dim() > 1 else 1
             
             # Convert to mono for analysis
             if channels > 1:
-                mono_audio = audio.mean(dim=1)
+                mono_audio = audio_tensor.mean(dim=1)
             else:
-                mono_audio = audio.squeeze()
+                mono_audio = audio_tensor.squeeze()
             
             # Calculate basic statistics
             audio_min = mono_audio.min().item()
@@ -360,16 +376,16 @@ class RajAudioAnalyzer:
             # Generate analysis report
             if analysis_type == "basic":
                 report = self._generate_basic_report(
-                    duration, channels, sample_rate, audio_min, audio_max, 
+                    duration, channels, audio_sr, audio_min, audio_max, 
                     audio_mean, audio_std, audio_rms, dynamic_range_db
                 )
             elif analysis_type == "detailed":
                 report = self._generate_detailed_report(
-                    mono_audio, sample_rate, duration, channels, window_size, overlap
+                    mono_audio, audio_sr, duration, channels, window_size, overlap
                 )
             else:  # frequency
                 report = self._generate_frequency_report(
-                    mono_audio, sample_rate, duration
+                    mono_audio, audio_sr, duration
                 )
             
             # Generate statistics
@@ -378,7 +394,7 @@ class RajAudioAnalyzer:
                 f"Duration: {duration:.2f}s\\n"
                 f"Samples: {total_samples:,}\\n"
                 f"Channels: {channels}\\n"
-                f"Sample Rate: {sample_rate:,}Hz\\n"
+                f"Sample Rate: {audio_sr:,}Hz\\n"
                 f"Range: [{audio_min:.3f}, {audio_max:.3f}]\\n"
                 f"Mean: {audio_mean:.3f}\\n"
                 f"RMS: {audio_rms:.3f}\\n"

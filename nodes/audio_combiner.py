@@ -81,21 +81,29 @@ class RajAudioCombiner:
     FUNCTION = "combine_audio_video"
     CATEGORY = "Raj Video Processing 🎬/Audio"
     
-    def combine_audio_video(self, video_frames: torch.Tensor, audio: torch.Tensor,
+    def combine_audio_video(self, video_frames: torch.Tensor, audio,
                            video_fps: float, audio_sample_rate: int, sync_method: str,
                            audio_offset: float = 0.0, preserve_original_audio: bool = False,
                            mix_ratio: float = 0.5, output_format: str = "mp4",
-                           audio_codec: str = "aac", video_codec: str = "h264") -> Tuple[torch.Tensor, str, str]:
+                           audio_codec: str = "aac", video_codec: str = "h264"):
         """
         Combine video frames with audio track.
         """
+        
+        # Extract tensor from ComfyUI AUDIO format (dict with waveform and sample_rate)
+        if isinstance(audio, dict):
+            audio_tensor = audio["waveform"].squeeze(0).transpose(0, 1)  # [batch, channels, samples] -> [samples, channels]
+            audio_sr = audio["sample_rate"]
+        else:
+            audio_tensor = audio
+            audio_sr = audio_sample_rate
         
         # Validate inputs
         if video_frames.numel() == 0:
             logger.error("Video frames are empty")
             return (video_frames, "Empty video frames", "")
         
-        if audio.numel() == 0:
+        if audio_tensor.numel() == 0:
             logger.error("Audio is empty")
             return (video_frames, "Empty audio", "")
         
@@ -104,8 +112,8 @@ class RajAudioCombiner:
         video_duration = num_frames / video_fps
         
         # Calculate audio duration
-        audio_samples = audio.shape[0]
-        audio_duration = audio_samples / audio_sample_rate
+        audio_samples = audio_tensor.shape[0]
+        audio_duration = audio_samples / audio_sr
         
         logger.info(f"🎬 Combining video ({video_duration:.2f}s) with audio ({audio_duration:.2f}s)")
         
@@ -114,8 +122,8 @@ class RajAudioCombiner:
             # Automatically adjust audio to match video duration
             if abs(video_duration - audio_duration) > 0.1:  # More than 100ms difference
                 logger.info(f"⚡ Auto-syncing: adjusting audio from {audio_duration:.2f}s to {video_duration:.2f}s")
-                target_samples = int(video_duration * audio_sample_rate)
-                audio = self._adjust_audio_length(audio, target_samples)
+                target_samples = int(video_duration * audio_sr)
+                audio_tensor = self._adjust_audio_length(audio_tensor, target_samples)
                 audio_duration = video_duration
         
         elif sync_method == "manual_offset":
@@ -124,14 +132,14 @@ class RajAudioCombiner:
                 offset_samples = int(abs(audio_offset) * audio_sample_rate)
                 if audio_offset > 0:
                     # Delay audio (add silence at beginning)
-                    silence = torch.zeros((offset_samples, audio.shape[1]))
-                    audio = torch.cat([silence, audio], dim=0)
+                    silence = torch.zeros((offset_samples, audio_tensor.shape[1]))
+                    audio_tensor = torch.cat([silence, audio_tensor], dim=0)
                 else:
                     # Advance audio (trim from beginning)
-                    if offset_samples < audio.shape[0]:
-                        audio = audio[offset_samples:]
+                    if offset_samples < audio_tensor.shape[0]:
+                        audio_tensor = audio_tensor[offset_samples:]
                     else:
-                        audio = torch.zeros((1, audio.shape[1]))
+                        audio_tensor = torch.zeros((1, audio_tensor.shape[1]))
                 
                 logger.info(f"📍 Applied audio offset: {audio_offset:.2f}s")
         
@@ -140,16 +148,16 @@ class RajAudioCombiner:
             if abs(video_duration - audio_duration) > 0.01:
                 stretch_ratio = video_duration / audio_duration
                 logger.info(f"🔄 Stretching audio by {stretch_ratio:.2f}x")
-                audio = self._time_stretch_audio(audio, stretch_ratio, audio_sample_rate)
+                audio_tensor = self._time_stretch_audio(audio_tensor, stretch_ratio, audio_sr)
         
         elif sync_method == "trim_to_match":
             # Trim longer track to match shorter
             min_duration = min(video_duration, audio_duration)
-            target_samples = int(min_duration * audio_sample_rate)
+            target_samples = int(min_duration * audio_sr)
             target_frames = int(min_duration * video_fps)
             
-            if audio.shape[0] > target_samples:
-                audio = audio[:target_samples]
+            if audio_tensor.shape[0] > target_samples:
+                audio_tensor = audio_tensor[:target_samples]
             if video_frames.shape[0] > target_frames:
                 video_frames = video_frames[:target_frames]
             
@@ -173,7 +181,7 @@ class RajAudioCombiner:
                 temp_audio_path = temp_audio.name
             
             # Save audio
-            success = AudioProcessor.save_audio_tensor(audio, temp_audio_path, audio_sample_rate)
+            success = AudioProcessor.save_audio_tensor(audio_tensor, temp_audio_path, audio_sr)
             if not success:
                 raise RuntimeError("Failed to save audio")
             
@@ -426,7 +434,7 @@ class RajAudioExtractor:
     
     def extract_audio(self, video_frames: torch.Tensor, video_fps: float,
                      target_sample_rate: int, mono: bool,
-                     original_audio: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, str]:
+                     original_audio = None) -> Tuple[Dict, str]:
         """
         Extract or generate audio from video frames.
         """
@@ -435,19 +443,29 @@ class RajAudioExtractor:
         # This node would typically be used with original audio pass-through
         # or to generate silence for the video duration
         
-        if original_audio is not None and original_audio.numel() > 0:
-            # Pass through original audio
-            logger.info("📤 Using provided original audio")
-            
-            audio_info = (
-                f"Audio Extraction\n"
-                f"Source: Original audio provided\n"
-                f"Samples: {original_audio.shape[0]:,}\n"
-                f"Channels: {original_audio.shape[1]}\n"
-                f"Duration: {original_audio.shape[0] / target_sample_rate:.2f}s"
-            )
-            
-            return (original_audio, audio_info)
+        # Extract tensor from ComfyUI AUDIO format (dict with waveform and sample_rate)
+        if original_audio is not None:
+            if isinstance(original_audio, dict):
+                original_audio_tensor = original_audio["waveform"].squeeze(0).transpose(0, 1)  # [batch, channels, samples] -> [samples, channels]
+                original_audio_sr = original_audio["sample_rate"]
+            else:
+                original_audio_tensor = original_audio
+                original_audio_sr = target_sample_rate
+                
+            if original_audio_tensor.numel() > 0:
+                # Pass through original audio
+                logger.info("📤 Using provided original audio")
+                
+                audio_info = (
+                    f"Audio Extraction\n"
+                    f"Source: Original audio provided\n"
+                    f"Samples: {original_audio_tensor.shape[0]:,}\n"
+                    f"Channels: {original_audio_tensor.shape[1]}\n"
+                    f"Duration: {original_audio_tensor.shape[0] / original_audio_sr:.2f}s"
+                )
+                
+                # Return in ComfyUI AUDIO format
+                return ({"waveform": original_audio_tensor.transpose(0, 1).unsqueeze(0), "sample_rate": original_audio_sr}, audio_info)
         else:
             # Generate silence matching video duration
             num_frames = video_frames.shape[0]
@@ -468,4 +486,5 @@ class RajAudioExtractor:
                 f"Channels: {num_channels} ({'mono' if mono else 'stereo'})"
             )
             
-            return (silence, audio_info)
+            # Return in ComfyUI AUDIO format
+            return ({"waveform": silence.transpose(0, 1).unsqueeze(0), "sample_rate": target_sample_rate}, audio_info)
