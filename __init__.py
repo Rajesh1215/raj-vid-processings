@@ -31,6 +31,10 @@ try:
     from .nodes.whisper_process import RajWhisperProcess
     from .nodes.audio_loader import RajAudioLoader, RajAudioProcessor
     from .nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
+    # NEW Audio Overlay & Segmentation Nodes
+    from .nodes.audio_segmenter import RajAudioSegmenter, RajAudioMultiSegmenter
+    from .nodes.audio_overlay import RajAudioOverlay, RajAudioMultiOverlay
+    from .nodes.audio_combiner import RajAudioCombiner, RajAudioExtractor
     # Subtitle System Nodes
     from .nodes.subtitle_engine import RajSubtitleEngine
     from .nodes.text_to_timing import RajTextToTiming
@@ -61,6 +65,10 @@ except ImportError:
     from .nodes.whisper_process import RajWhisperProcess
     from .nodes.audio_loader import RajAudioLoader, RajAudioProcessor
     from .nodes.audio_preview import RajAudioPreview, RajAudioAnalyzer
+    # NEW Audio Overlay & Segmentation Nodes
+    from .nodes.audio_segmenter import RajAudioSegmenter, RajAudioMultiSegmenter
+    from .nodes.audio_overlay import RajAudioOverlay, RajAudioMultiOverlay
+    from .nodes.audio_combiner import RajAudioCombiner, RajAudioExtractor
     # Subtitle System Nodes
     from .nodes.subtitle_engine import RajSubtitleEngine
     from .nodes.text_to_timing import RajTextToTiming
@@ -100,6 +108,13 @@ NODE_CLASS_MAPPINGS = {
     "RajAudioProcessor": RajAudioProcessor,
     "RajAudioPreview": RajAudioPreview,
     "RajAudioAnalyzer": RajAudioAnalyzer,
+    # NEW Audio Overlay & Segmentation Nodes
+    "RajAudioSegmenter": RajAudioSegmenter,
+    "RajAudioMultiSegmenter": RajAudioMultiSegmenter,
+    "RajAudioOverlay": RajAudioOverlay,
+    "RajAudioMultiOverlay": RajAudioMultiOverlay,
+    "RajAudioCombiner": RajAudioCombiner,
+    "RajAudioExtractor": RajAudioExtractor,
     # Subtitle System Nodes
     "RajSubtitleEngine": RajSubtitleEngine,
     "RajTextToTiming": RajTextToTiming,
@@ -140,6 +155,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajAudioProcessor": "🎚️ Raj Audio Processor",
     "RajAudioPreview": "🎵 Raj Audio Preview",
     "RajAudioAnalyzer": "🔍 Raj Audio Analyzer",
+    # NEW Audio Overlay & Segmentation Nodes
+    "RajAudioSegmenter": "✂️ Raj Audio Segmenter",
+    "RajAudioMultiSegmenter": "📋 Raj Audio Multi Segmenter",
+    "RajAudioOverlay": "🎛️ Raj Audio Overlay",
+    "RajAudioMultiOverlay": "🎚️ Raj Audio Multi Overlay",
+    "RajAudioCombiner": "🎬 Raj Audio Combiner",
+    "RajAudioExtractor": "📤 Raj Audio Extractor",
     # Subtitle System Nodes
     "RajSubtitleEngine": "🎬 Raj Subtitle Engine",
     "RajTextToTiming": "⏰ Raj Text to Timing",
@@ -192,6 +214,15 @@ print("   - Audio Processor: Normalize, resample, trim, fade, amplify operations
 print("   - Audio Preview: Playable audio files with waveform visualization")
 print("   - Audio Analyzer: Detailed frequency analysis and processing recommendations")
 print("   - Multi-format Support: TorchAudio, Librosa, MoviePy backends")
+print("")
+print("🎛️ NEW: Audio Overlay & Segmentation System")
+print("   - Audio Segmenter: Extract segments with dual outputs (segment + remaining)")
+print("   - Multi Segmenter: Extract multiple segments with various output modes")
+print("   - Audio Overlay: Mix tracks with add, replace, crossfade, ducking, insert modes")
+print("   - Multi Overlay: 4-track mixing with timeline positioning and volume control")
+print("   - Audio Combiner: Merge audio with video ensuring perfect synchronization")
+print("   - Audio Extractor: Extract audio from any video node for manipulation")
+print("   - Professional Features: Crossfading, ducking, normalization, time stretching")
 print("")
 print("   - Video Formats: MP4, MOV, AVI, WebM, GIF")
 print("   - Upload Support: Drag & Drop, Upload Button")
