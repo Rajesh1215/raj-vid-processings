@@ -12,6 +12,9 @@ except ImportError:
         @staticmethod
         def get_temp_directory():
             return "temp"
+        @staticmethod
+        def get_output_directory():
+            return "output"
     folder_paths = MockFolderPaths()
 
 class RajVideoPreview:
@@ -151,26 +154,20 @@ class RajVideoPreview:
             
             width, height = new_width, new_height
         
-        # Create temporary preview file
-        temp_dir = folder_paths.get_temp_directory()
-        os.makedirs(temp_dir, exist_ok=True)
+        # Create preview file in output directory (use GIF for ComfyUI compatibility)
+        output_dir = folder_paths.get_output_directory()
+        os.makedirs(output_dir, exist_ok=True)
         
         timestamp = str(int(time.time()))
-        preview_filename = f"raj_preview_{timestamp}.{preview_format}"
-        preview_path = os.path.join(temp_dir, preview_filename)
+        # Always use GIF for preview compatibility with ComfyUI's built-in preview system
+        preview_filename = f"raj_preview_{timestamp}.gif"
+        preview_path = os.path.join(output_dir, preview_filename)
         
-        # Generate preview video
+        # Generate preview GIF (always use GIF for ComfyUI compatibility)
         try:
-            if preview_format == "mp4":
-                file_path = self._create_mp4_preview(
-                    frames, preview_path, fps, audio_tensor, audio_sr, settings, device
-                )
-            elif preview_format == "webm":
-                file_path = self._create_webm_preview(
-                    frames, preview_path, fps, audio_tensor, audio_sr, settings, device
-                )
-            else:
-                raise ValueError(f"Unsupported preview format: {preview_format}")
+            file_path = self._create_gif_preview(
+                frames, preview_path, fps, audio_tensor, audio_sr, settings, device
+            )
                 
         except Exception as e:
             logger.error(f"❌ Preview generation failed: {e}")
@@ -181,7 +178,7 @@ class RajVideoPreview:
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0
         
         metadata = (
-            f"Preview: {preview_format.upper()} | "
+            f"Preview: GIF | "
             f"Resolution: {width}x{height} | "
             f"Quality: {preview_quality} | "
             f"Size: {file_size_mb:.2f}MB | "
@@ -193,12 +190,12 @@ class RajVideoPreview:
         
         preview_info = f"Video preview ready: {total_frames} frames, {duration:.2f}s"
         
-        # Prepare UI preview data for the JavaScript widget
+        # Prepare UI preview data for ComfyUI's built-in preview system
         preview_data = {
             "filename": preview_filename,
             "subfolder": "",
-            "type": "temp",
-            "format": f"video/{preview_format}",
+            "type": "output",
+            "format": "image/gif",
             "frame_rate": fps,
             "frame_count": total_frames,
             "auto_play": auto_play,
@@ -367,6 +364,44 @@ class RajVideoPreview:
                 logger.warning("⚠️ Neither torchaudio nor scipy available, skipping audio")
                 raise
     
+    def _create_gif_preview(self, frames, output_path, fps, audio_tensor, audio_sr, settings, device):
+        """Create animated GIF preview using PIL (ComfyUI compatible)"""
+        from PIL import Image
+        
+        frames_cpu = frames.cpu().numpy()
+        frames_uint8 = (frames_cpu * 255).astype('uint8')
+        
+        # Convert frames to PIL Images
+        pil_frames = []
+        for frame in frames_uint8:
+            img = Image.fromarray(frame, 'RGB')
+            pil_frames.append(img)
+        
+        # Calculate frame duration in milliseconds
+        duration_ms = int(1000 / fps)
+        
+        # Optimize for smaller file size
+        max_colors = settings.get('gif_colors', 256)  # Reduce colors for smaller file
+        
+        # Save as animated GIF
+        if pil_frames:
+            pil_frames[0].save(
+                output_path,
+                format='GIF',
+                save_all=True,
+                append_images=pil_frames[1:],
+                duration=duration_ms,
+                loop=0,  # Infinite loop
+                optimize=True,
+                colors=max_colors
+            )
+            
+            logger.info(f"📸 Created animated GIF: {output_path}")
+            logger.info(f"   Frames: {len(pil_frames)} | FPS: {fps} | Duration: {duration_ms}ms per frame")
+            return output_path
+        else:
+            raise ValueError("No frames to create GIF")
+    
     def _create_fallback_preview(self, frames, output_path, device):
         """Create a static image preview as fallback"""
         from PIL import Image
@@ -487,8 +522,8 @@ class RajVideoPreviewAdvanced:
             preview_data = {
                 "filename": os.path.basename(preview_files[0]),
                 "subfolder": "",
-                "type": "temp",
-                "format": "video/mp4",
+                "type": "output",
+                "format": "image/gif",
                 "frame_rate": fps,
                 "frame_count": selected_frames
             }
@@ -506,55 +541,42 @@ class RajVideoPreviewAdvanced:
         import tempfile
         
         timestamp = str(int(time.time()))
-        segment_filename = f"raj_advanced_preview_{timestamp}_{segment_num}.mp4"
-        temp_dir = folder_paths.get_temp_directory()
-        segment_path = os.path.join(temp_dir, segment_filename)
+        segment_filename = f"raj_advanced_preview_{timestamp}_{segment_num}.gif"
+        output_dir = folder_paths.get_output_directory()
+        segment_path = os.path.join(output_dir, segment_filename)
+        
+        # Create GIF for ComfyUI compatibility
+        from PIL import Image
         
         frames_cpu = frames.cpu().numpy()
         frames_uint8 = (frames_cpu * 255).astype('uint8')
         height, width = frames_uint8.shape[1:3]
         
-        # Build advanced FFmpeg command
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo",
-            "-vcodec", "rawvideo",
-            "-s", f"{width}x{height}",
-            "-pix_fmt", "rgb24", 
-            "-r", str(fps),
-            "-i", "-"
-        ]
-        
-        # Codec selection
-        if codec == "auto" or codec == "h264":
-            cmd.extend(["-c:v", "libx264", "-crf", "23"])
-        elif codec == "h265":
-            cmd.extend(["-c:v", "libx265", "-crf", "23"])
-        elif codec == "vp9":
-            cmd.extend(["-c:v", "libvpx-vp9", "-crf", "23"])
-        elif codec == "av1":
-            cmd.extend(["-c:v", "libaom-av1", "-crf", "23"])
-        
-        # Bitrate control
-        cmd.extend(["-b:v", bitrate])
-        cmd.extend(["-pix_fmt", "yuv420p"])
-        cmd.append(segment_path)
-        
-        # Execute FFmpeg
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
+        # Convert frames to PIL Images
+        pil_frames = []
         for frame in frames_uint8:
-            process.stdin.write(frame.tobytes())
+            img = Image.fromarray(frame, 'RGB')
+            pil_frames.append(img)
         
-        stdout, stderr = process.communicate()
+        # Calculate frame duration
+        duration_ms = int(1000 / fps)
         
-        encoding_log = f"Segment {segment_num}: {codec} @ {bitrate}\n"
-        if stderr:
-            encoding_log += stderr.decode()
-        
-        return segment_path, encoding_log
+        # Create animated GIF
+        if pil_frames:
+            pil_frames[0].save(
+                segment_path,
+                format='GIF',
+                save_all=True,
+                append_images=pil_frames[1:],
+                duration=duration_ms,
+                loop=0,
+                optimize=True,
+                colors=256  # Limit colors for smaller file size
+            )
+            
+            file_size = os.path.getsize(segment_path) / (1024 * 1024)
+            encoding_log = f"Segment {segment_num}: GIF | {width}x{height} | {len(pil_frames)} frames | {file_size:.2f}MB"
+            
+            return segment_path, encoding_log
+        else:
+            raise ValueError("No frames to create GIF segment")
