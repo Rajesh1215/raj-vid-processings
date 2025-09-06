@@ -199,7 +199,14 @@ class RajVideoUpload:
                 "filename": os.path.basename(video_path),
                 "subfolder": "",
                 "type": "input",
-                "format": f"video/{video_format}"
+                "format": f"video/{video_format}",
+                "frame_rate": video_info['fps'],
+                "frame_count": video_info['total_frames'],
+                "width": video_info['width'],
+                "height": video_info['height'],
+                "duration": video_info['total_frames'] / video_info['fps'],
+                "device": str(video_info['device']),
+                "has_audio": audio_tensor is not None and audio_tensor.numel() > 0
             }
             
             return {

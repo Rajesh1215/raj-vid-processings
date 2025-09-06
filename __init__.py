@@ -19,6 +19,7 @@ try:
     from .nodes.video_opacity_gradient import RajVideoOpacityGradient
     from .nodes.video_chroma_key import RajVideoChromaKey
     from .nodes.video_reverser import RajVideoReverser
+    from .nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     # Text Generation Nodes
     from .nodes.text_generator import RajTextGenerator
     from .nodes.whisper_captions import RajWhisperCaptions
@@ -53,6 +54,7 @@ except ImportError:
     from .nodes.video_opacity_gradient import RajVideoOpacityGradient
     from .nodes.video_chroma_key import RajVideoChromaKey
     from .nodes.video_reverser import RajVideoReverser
+    from .nodes.video_preview import RajVideoPreview, RajVideoPreviewAdvanced
     # Text Generation Nodes
     from .nodes.text_generator import RajTextGenerator
     from .nodes.whisper_captions import RajWhisperCaptions
@@ -94,6 +96,8 @@ NODE_CLASS_MAPPINGS = {
     "RajVideoOpacityGradient": RajVideoOpacityGradient,
     "RajVideoChromaKey": RajVideoChromaKey,
     "RajVideoReverser": RajVideoReverser,
+    "RajVideoPreview": RajVideoPreview,
+    "RajVideoPreviewAdvanced": RajVideoPreviewAdvanced,
     # Text Generation Nodes
     "RajTextGenerator": RajTextGenerator,
     "RajWhisperCaptions": RajWhisperCaptions,
@@ -141,6 +145,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RajVideoOpacityGradient": "🌈 Raj Video Opacity Gradient",
     "RajVideoChromaKey": "🎬 Raj Video Chroma Key",
     "RajVideoReverser": "🔄 Raj Video Reverser",
+    "RajVideoPreview": "👁️ Raj Video Preview",
+    "RajVideoPreviewAdvanced": "🔍 Raj Video Preview (Advanced)",
     # Text Generation Nodes
     "RajTextGenerator": "📝 Raj Text Generator",
     "RajWhisperCaptions": "🎤 Raj Whisper Captions",

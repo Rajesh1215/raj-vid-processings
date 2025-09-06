@@ -165,11 +165,15 @@ class RajVideoSaver:
         preview = {
             "filename": os.path.basename(file_path),
             "subfolder": "",
-            "type": "output" if save_to_output else "temp",
+            "type": "output" if save_to_output else "temp", 
             "format": f"video/{format}" if format != "gif" else "image/gif",
             # Additional metadata for preview widget
             "frame_rate": fps,
-            "frame_count": total_frames
+            "frame_count": total_frames,
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "file_size_mb": os.path.getsize(file_path) / (1024*1024) if os.path.exists(file_path) else 0
         }
         
         return {
@@ -471,7 +475,11 @@ class RajVideoSaverAdvanced:
             "type": "output",
             "format": "video/mp4",
             "frame_rate": fps,
-            "frame_count": video_frame_count
+            "frame_count": video_frame_count,
+            "width": video_width,
+            "height": video_height,
+            "duration": duration,
+            "file_size_mb": os.path.getsize(output_path) / (1024*1024) if os.path.exists(output_path) else 0
         }
         
         return {
